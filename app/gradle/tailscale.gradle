@@ -1,0 +1,51 @@
+import org.gradle.process.ExecOperations
+import groovy.json.JsonSlurper
+
+// Source-built Go bindings. Never check in the AAR or fetch build tools here.
+def bridgeDir = file("$rootDir/tailscale-go")
+def aar = file("$bridgeDir/build/tailscale.aar")
+def execOps = project.services.get(ExecOperations)
+def localConfig = new Properties()
+def localProps = file("$rootDir/local.properties")
+if (localProps.exists()) localProps.withInputStream { localConfig.load(it) }
+def sdkPath = localConfig.getProperty('sdk.dir') ?: System.getenv('ANDROID_HOME') ?: System.getenv('ANDROID_SDK_ROOT')
+def ndkPath = project.findProperty('androidNdkPath') ?: localConfig.getProperty('ndk.dir') ?: System.getenv('ANDROID_NDK_HOME')
+def toolPaths = [pythonBin: project.findProperty('pythonBin') ?: (System.getProperty('os.name').startsWith('Windows') ? 'python' : 'python3'),
+                 goBin: project.findProperty('goBin') ?: 'go',
+                 gomobileBin: project.findProperty('gomobileBin') ?: 'gomobile',
+                 gobindBin: project.findProperty('gobindBin') ?: 'gobind']
+def builder = "$rootDir/scripts/build_tailscale_poc.py"
+def toolArguments = ['--python-launcher', toolPaths.pythonBin.toString()]
+['goBin': '--go', 'gomobileBin': '--gomobile', 'gobindBin': '--gobind'].each { key, option ->
+    toolArguments.addAll([option, toolPaths[key].toString()])
+}
+// Resolve with the builder's Python/PATH semantics and root working directory.
+// This provider runs before up-to-date checks, not just inside the task action.
+def toolchain = providers.exec {
+    workingDir rootDir
+    commandLine([toolPaths.pythonBin, builder, '--print-build-inputs'] + toolArguments)
+}.standardOutput.asText.map { new JsonSlurper().parseText(it) }
+def buildBridge = tasks.register('tailscaleBuild') {
+    group = 'build'
+    description = 'Builds the Tailscale Android bindings from pinned Go sources.'
+    inputs.files(fileTree(bridgeDir) { include '**/*.go', 'go.mod', 'go.sum'; exclude 'build/**' })
+    inputs.file("$rootDir/scripts/build_tailscale_poc.py")
+    inputs.properties(toolPaths.collectEntries { key, value -> [(key): value.toString()] })
+    inputs.property('androidSdkPath', sdkPath ?: '')
+    inputs.property('androidNdkPath', ndkPath ?: '')
+    inputs.property('resolvedToolchain', toolchain.map { [tools: it.tools, goEnv: it.goEnv] })
+    inputs.files(toolchain.map { it.files })
+    outputs.file(aar)
+    doLast {
+        def tools = toolchain.get().tools
+        def command = [tools.python, builder]
+        ['go': '--go', 'gomobile': '--gomobile', 'gobind': '--gobind'].each { key, option ->
+            command.addAll([option, tools[key].toString()])
+        }
+        if (sdkPath) command.addAll(['--android-sdk', sdkPath])
+        if (ndkPath) command.addAll(['--android-ndk', ndkPath.toString()])
+        execOps.exec { workingDir rootDir; commandLine command }
+    }
+}
+
+dependencies { implementation files(aar).builtBy(buildBridge) }

@@ -21,7 +21,9 @@
 #include "tls.h"
 #include "ip6_ext.h"
 #include "wg_flow_cache.h"
+#include "tailscale_route.h"
 #include <stdatomic.h>
+#include <sys/time.h>
 
 int max_tun_msg = 0;
 extern int loglevel;
@@ -616,6 +618,13 @@ void handle_ip(const struct arguments *args,
     }
 
     int wg_is_required = atomic_load_explicit(&wg_required, memory_order_acquire);
+    int tailscale_dest = tailscale_is_enabled() && is_tailscale_destination(version, daddr);
+    // Redirect information is returned only by a new policy lookup. Later DNS
+    // packets must keep the native session that owns the proxy connection.
+    int tailscale_dns_session = tailscale_dest && dport == 53 &&
+            ((protocol == IPPROTO_UDP && udp_session_exists) ||
+             (protocol == IPPROTO_TCP && has_tcp_session(args, version, pkt, payload)));
+    int tailscale_tcp_policy = tailscale_dest && protocol == IPPROTO_TCP && !tailscale_dns_session;
 
     jint uid = -1;
 
@@ -633,7 +642,7 @@ void handle_ip(const struct arguments *args,
     // is taking the fast path.
     jint retained_tcp_uid = -1;
     int retained_tcp_owner = 0;
-    if (wg_is_required && protocol == IPPROTO_TCP && !syn &&
+    if ((wg_is_required || tailscale_tcp_policy) && protocol == IPPROTO_TCP && !syn &&
         tcp_owner_lookup(version, saddr, sport, daddr, dport, &retained_tcp_uid))
         retained_tcp_owner = 1;
 
@@ -704,12 +713,26 @@ void handle_ip(const struct arguments *args,
         }
     }
 
+    if (tailscale_tcp_policy && !syn) {
+        int verdict;
+        if (route_flow_lookup_verdict(version, protocol, saddr, sport, daddr, dport, &verdict)) {
+            if (verdict == ROUTE_FLOW_VERDICT_BLOCKED)
+                return;
+            tcp_flow_cached_allowed = (verdict == ROUTE_FLOW_VERDICT_ALLOWED);
+        }
+        if (!tcp_flow_cached_allowed) {
+            tcp_flow_policy_pending = 1;
+            uid = retained_tcp_owner ? retained_tcp_uid : resolve_flow_owner(
+                    args, version, protocol, saddr, sport, daddr, dport, source, dest, pkt, payload, syn);
+        }
+    }
+
     if (tcp_flow_policy_pending && uid < 0) {
         // ServiceSinkhole treats INVALID_UID as an allowed/unknown packet.
         // Keep this flow fail-closed and leave its verdict unknown so the next
         // packet retries ownership after Android has published the socket.
         log_android(ANDROID_LOG_WARN,
-                    "WG TCP owner unavailable for %s/%u > %s/%u; dropping",
+                    "Remote TCP owner unavailable for %s/%u > %s/%u; dropping",
                     source, sport, dest, dport);
         return;
     }
@@ -741,7 +764,11 @@ void handle_ip(const struct arguments *args,
     // block decision, but the routing fork needs the UID now: with no UID and
     // no session, the SYN falls to the global default and every later packet
     // of that flow inherits the answer from it.
-    int sni_candidate = (is_play && protocol == IPPROTO_TCP && dport == 443);
+    // Adding a Tailnet IPv6 address must not silently enable ordinary IPv6
+    // when the user's existing IPv6 setting is off (the builder captures ::/0).
+    if (version == 6 && tailscale_blocks_other_ipv6() && !tailscale_dest)
+        return;
+    int sni_candidate = (is_play && protocol == IPPROTO_TCP && dport == 443 && !tailscale_dest);
     if (protocol == IPPROTO_ICMP || protocol == IPPROTO_ICMPV6 ||
         (protocol == IPPROTO_UDP && !reuse_wg_udp_verdict &&
          !udp_session_exists) ||
@@ -959,6 +986,16 @@ void handle_ip(const struct arguments *args,
 
     // Handle allowed traffic
     if (allowed) {
+        // DNS redirects must retain the existing native response inspection and
+        // blocklist recording path. Other overlay traffic is always claimed,
+        // including while the Go engine is unready or the bridge is detached.
+        if (tailscale_dest && !tailscale_dns_session && !(dport == 53 && redirect != NULL)) {
+            if (tailscale_tcp_policy && uid >= 0)
+                route_flow_store_verdict(version, protocol, saddr, sport, daddr, dport,
+                                         ROUTE_FLOW_VERDICT_ALLOWED);
+            write_tailscale_packet(pkt, length);
+            return;
+        }
         // WireGuard hijack: when enabled, hand the raw IP packet to the WG
         // bridge instead of running the userspace TCP/UDP state machines.
         // Per-app UID lookup and the block decision above still apply.
@@ -1072,13 +1109,13 @@ void handle_ip(const struct arguments *args,
         // Keep a negative result for tunnelled TCP too. It prevents repeated
         // packets (including retransmissions) from crossing JNI, while an
         // unresolved owner remains deliberately uncached and can be retried.
-        if (wg_is_required && protocol == IPPROTO_TCP && !tcp_native_session &&
+        if ((wg_is_required || tailscale_tcp_policy) && protocol == IPPROTO_TCP && !tcp_native_session &&
             uid >= 0) {
             // Cache every newly blocked established no-session flow,
             // including one whose route changed to direct after invalidation.
             // The policy decision must not be bypassed on the next packet, and
             // a blocked packet must never reach the WireGuard write below.
-            if (!tcp_flow_route_cached)
+            if (wg_is_required && !tcp_flow_route_cached)
                 (void) resolve_tunnel_uid(
                         args, version, protocol, saddr, sport, daddr, dport,
                         source, dest, pkt, payload, syn, uid, NULL);

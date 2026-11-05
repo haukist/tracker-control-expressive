@@ -104,8 +104,16 @@ public class DnsProxyServer {
         }
     }
 
+    interface LocalResolver { byte[] resolve(byte[] query); }
+    private final LocalResolver localResolver;
+
     private DnsProxyServer(Context context) {
+        this(context, net.kollnig.missioncontrol.tailscale.TailscaleManager::resolveDNS);
+    }
+
+    DnsProxyServer(Context context, LocalResolver localResolver) {
         this.context = context.getApplicationContext();
+        this.localResolver = localResolver;
     }
 
     public static synchronized DnsProxyServer getInstance(Context context) {
@@ -120,7 +128,7 @@ public class DnsProxyServer {
      */
     public synchronized void start() {
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
-        boolean dohEnabled = prefs.getBoolean("doh_enabled", false);
+        boolean dohEnabled = prefs.getBoolean("doh_enabled", false) || prefs.getBoolean("ts_enabled", false);
 
         if (!dohEnabled) {
             Log.i(TAG, "DoH not enabled, not starting DNS proxy");
@@ -311,7 +319,7 @@ public class DnsProxyServer {
      */
     public synchronized void checkAndUpdateState() {
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
-        boolean dohEnabled = prefs.getBoolean("doh_enabled", false);
+        boolean dohEnabled = prefs.getBoolean("doh_enabled", false) || prefs.getBoolean("ts_enabled", false);
 
         if (dohEnabled && !running.get()) {
             Log.i(TAG, "DoH enabled but proxy not running, starting");
@@ -414,6 +422,21 @@ public class DnsProxyServer {
 
             SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
             byte[] responseData = null;
+
+            if (prefs.getBoolean("ts_enabled", false))
+                responseData = localResolver.resolve(queryData);
+            boolean plainDns = !prefs.getBoolean("doh_enabled", false);
+            if (responseData == null && plainDns) responseData = resolveViaStandardDns(queryData);
+            if (responseData != null) {
+                DatagramSocket socket = serverSocket;
+                if (socket != null && !socket.isClosed())
+                    socket.send(new DatagramPacket(responseData, responseData.length, clientAddress, clientPort));
+                return;
+            }
+            if (plainDns) {
+                sendServFailResponse(queryData, clientAddress, clientPort);
+                return;
+            }
 
             // Circuit breaker: skip DoH if we recently had too many failures
             CircuitState state = getCurrentCircuitState();
@@ -589,6 +612,21 @@ public class DnsProxyServer {
 
             SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
             byte[] responseData = null;
+
+            if (prefs.getBoolean("ts_enabled", false))
+                responseData = localResolver.resolve(queryData);
+            boolean plainDns = !prefs.getBoolean("doh_enabled", false);
+            if (responseData == null && plainDns) responseData = resolveViaStandardDns(queryData);
+            if (responseData != null) {
+                out.writeShort(responseData.length);
+                out.write(responseData);
+                out.flush();
+                return;
+            }
+            if (plainDns) {
+                sendTcpServFail(out, queryData);
+                return;
+            }
 
             CircuitState state = getCurrentCircuitState();
             boolean circuitOpen = state.isOpen(System.currentTimeMillis());

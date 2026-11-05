@@ -20,6 +20,11 @@ def wgbridgeExecOperations = project.services.get(ExecOperations)
 // Resolve the NDK directory the way AGP does (local.properties, then env),
 // since modern AGP extensions no longer expose android.ndkDirectory.
 def findNdkDirectory = { ->
+    if (project.hasProperty('androidNdkPath')) {
+        def customNdk = file(project.property('androidNdkPath').toString())
+        if (!customNdk.directory) throw new GradleException("Android NDK not found at $customNdk")
+        return customNdk
+    }
     def sdkDir = null
     def localProps = file("$rootDir/local.properties")
     if (localProps.exists()) {
@@ -40,12 +45,13 @@ def findNdkDirectory = { ->
 // PATH that omits ~/.cargo/bin and Homebrew dirs, so falling back to
 // "just exec 'cargo'" fails on most macOS setups.
 // Order: explicit cargoBin Gradle property -> rustup default -> common installs.
+def cargoExecutable = System.getProperty('os.name').startsWith('Windows') ? 'cargo.exe' : 'cargo'
 def findCargoBinary = { ->
     def home = System.getProperty('user.home')
     def candidates = []
     if (project.hasProperty('cargoBin')) candidates << project.property('cargoBin')
     candidates += [
-            "${home}/.cargo/bin/cargo",           // rustup default location
+            "${home}/.cargo/bin/$cargoExecutable", // rustup default location
             '/opt/homebrew/opt/rustup/bin/cargo', // Homebrew rustup shim (Apple Silicon)
             '/usr/local/opt/rustup/bin/cargo',    // Homebrew rustup shim (Intel)
             '/usr/local/bin/cargo',
@@ -55,7 +61,7 @@ def findCargoBinary = { ->
         if (c != null && file(c).canExecute()) return c
     }
     // Last resort: hope it's on PATH (works on Linux usually).
-    return 'cargo'
+    return cargoExecutable
 }
 
 // Resolve the cargo target directory. By default cargo writes build artifacts
@@ -80,9 +86,9 @@ def resolveCargoTargetDir = { ->
 
 def assertCargoAvailable = { cargoBin ->
     def onPath = System.getenv('PATH')?.split(File.pathSeparator)?.any {
-        file("$it/cargo").canExecute()
+        file("$it/$cargoExecutable").canExecute()
     }
-    if ((cargoBin == 'cargo' && !onPath) || (cargoBin != 'cargo' && !file(cargoBin).canExecute())) {
+    if ((cargoBin == cargoExecutable && !onPath) || (cargoBin != cargoExecutable && !file(cargoBin).canExecute())) {
         throw new GradleException("""
             Could not find a `cargo` executable. Install Rust via rustup
             (https://rustup.rs), then run:
@@ -158,8 +164,9 @@ tasks.register('wgbridgeBuild') {
 
         // Tool installation must happen before Gradle runs. In particular,
         // F-Droid disables network access for the actual build phase.
-        def cargoNdkAvailable = file("${System.getProperty('user.home')}/.cargo/bin/cargo-ndk").canExecute() ||
-                env['PATH'].split(File.pathSeparator).any { file("$it/cargo-ndk").canExecute() }
+        def ndkExecutable = System.getProperty('os.name').startsWith('Windows') ? 'cargo-ndk.exe' : 'cargo-ndk'
+        def cargoNdkAvailable = file("${System.getProperty('user.home')}/.cargo/bin/$ndkExecutable").canExecute() ||
+                env['PATH'].split(File.pathSeparator).any { file("$it/$ndkExecutable").canExecute() }
         if (!cargoNdkAvailable) {
             throw new GradleException("""
                 Could not find cargo-ndk ${wgbridgeCargoNdkVersion}. Run:
@@ -203,7 +210,8 @@ tasks.register('wgbridgeBuild') {
             if (os.contains('win')) return 'windows-x86_64'
             return 'linux-x86_64'
         }()
-        def objcopy = "${findNdkDirectory().absolutePath}/toolchains/llvm/prebuilt/${hostTag}/bin/llvm-objcopy"
+        def executableSuffix = hostTag.startsWith('windows') ? '.exe' : ''
+        def objcopy = "${findNdkDirectory().absolutePath}/toolchains/llvm/prebuilt/${hostTag}/bin/llvm-objcopy${executableSuffix}"
         wgbridgeAbis.each { abi ->
             def lib = file("$wgbridgeOutDir/$abi/libwgbridge.so")
             if (lib.exists()) {
@@ -231,7 +239,7 @@ tasks.register('wgbridgeBuild') {
         def requiredTcdnsSymbols = ['tcdns_process_response',
                                     'tcdns_process_partial_response',
                                     'tcdns_abi_version']
-        def llvmNm = "${findNdkDirectory().absolutePath}/toolchains/llvm/prebuilt/${hostTag}/bin/llvm-nm"
+        def llvmNm = "${findNdkDirectory().absolutePath}/toolchains/llvm/prebuilt/${hostTag}/bin/llvm-nm${executableSuffix}"
         wgbridgeAbis.each { abi ->
             def lib = file("$wgbridgeOutDir/$abi/libwgbridge.so")
             // A missing library is itself a failure here: this check exists

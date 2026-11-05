@@ -118,6 +118,10 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
     private static final String TAG = "TrackerControl.Settings";
 
     private boolean running = false;
+    private net.kollnig.missioncontrol.tailscale.TailscaleSettings tailscaleSettings;
+    private final Runnable tailscaleStatusListener = () -> {
+        if (tailscaleSettings != null && !isFinishing()) tailscaleSettings.update();
+    };
     private final Handler wgStatusHandler = new Handler(Looper.getMainLooper());
     private final Runnable wgStatusListener = new Runnable() {
         @Override
@@ -217,6 +221,9 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
         final PreferenceScreen screen = getPreferenceScreen();
         final SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
         BlockingMode.enforcePlayStoreMode(this);
+        if (tailscaleSettings == null)
+            tailscaleSettings = new net.kollnig.missioncontrol.tailscale.TailscaleSettings(this, prefs);
+        tailscaleSettings.configure(screen);
 
         // Find category groups (may be null depending on which sub-screen is showing)
         PreferenceGroup cat_options = (PreferenceGroup) screen.findPreference("category_options");
@@ -630,6 +637,8 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
         prefs.registerOnSharedPreferenceChangeListener(this);
 
         net.kollnig.missioncontrol.wg.WgEgress.INSTANCE.addStateListener(wgStatusListener);
+        net.kollnig.missioncontrol.tailscale.TailscaleManager.addListener(tailscaleStatusListener);
+        if (tailscaleSettings != null) tailscaleSettings.update();
         PreferenceScreen screen = getPreferenceScreen();
         if (screen != null)
             configureWireGuardProfiles(screen, prefs);
@@ -644,6 +653,7 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
         prefs.unregisterOnSharedPreferenceChangeListener(this);
 
         net.kollnig.missioncontrol.wg.WgEgress.INSTANCE.removeStateListener(wgStatusListener);
+        net.kollnig.missioncontrol.tailscale.TailscaleManager.removeListener(tailscaleStatusListener);
     }
 
     @Override
@@ -879,6 +889,11 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
             configureWireGuardProfiles(getPreferenceScreen(), prefs);
             updateWireGuardStatus();
 
+        } else if ("ts_enabled".equals(name)) {
+            if (tailscaleSettings != null) tailscaleSettings.update();
+            refreshResearchModeSummary();
+            ServiceSinkhole.reload("changed " + name, this, false);
+
         } else if ("wg_enabled".equals(name)) {
             updateWireGuardStatus();
             refreshResearchModeSummary();
@@ -1093,6 +1108,10 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
     private void updateResearchModeSummary(Preference pref) {
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
         String base = getString(R.string.summary_log_logcat);
+        if (prefs.getBoolean("sni_enabled", false) && prefs.getBoolean("ts_enabled", false)) {
+            pref.setSummary(base + " " + getString(R.string.summary_sni_ts_note));
+            return;
+        }
         if (prefs.getBoolean("sni_enabled", false) &&
                 prefs.getBoolean("wg_enabled", false) &&
                 !TextUtils.isEmpty(prefs.getString("wg_config", null)))

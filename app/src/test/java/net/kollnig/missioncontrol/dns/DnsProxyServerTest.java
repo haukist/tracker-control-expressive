@@ -65,6 +65,7 @@ public class DnsProxyServerTest {
         DnsOverHttpsClient.resetInstance();
         prefs.edit()
                 .putBoolean("doh_enabled", false)
+                .putBoolean("ts_enabled", false)
                 .putBoolean("doh_dns_fallback", false)
                 .remove("doh_endpoint")
                 .commit();
@@ -76,6 +77,7 @@ public class DnsProxyServerTest {
         DnsOverHttpsClient.resetInstance();
         prefs.edit()
                 .putBoolean("doh_enabled", false)
+                .putBoolean("ts_enabled", false)
                 .putBoolean("doh_dns_fallback", false)
                 .remove("doh_endpoint")
                 .commit();
@@ -307,6 +309,19 @@ public class DnsProxyServerTest {
             proxy.stop();
             server.close();
         }
+    }
+
+    @Test
+    public void tailscaleOnlyStartsBothTransportsAndAnswersLocally() throws Exception {
+        proxy = new DnsProxyServer(RuntimeEnvironment.getApplication(), query -> RESPONSE.clone());
+        prefs.edit().putBoolean("ts_enabled", true).putBoolean("doh_enabled", false).commit();
+        proxy.checkAndUpdateState();
+        assertTrue(proxy.isRunning());
+        assertArrayEquals(RESPONSE, queryUdp());
+        assertArrayEquals(RESPONSE, queryTcp());
+        prefs.edit().putBoolean("ts_enabled", false).commit();
+        proxy.checkAndUpdateState();
+        assertFalse(proxy.isRunning());
     }
 
     private void startProxy(String endpoint) {

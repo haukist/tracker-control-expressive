@@ -230,6 +230,15 @@
         </PreferenceCategory>
     </PreferenceScreen>
 
+    <PreferenceScreen android:key="screen_tailscale" android:title="@string/setting_ts_title">
+        <Preference android:key="ts_status" android:title="@string/setting_ts_status" />
+        <eu.faircode.netguard.SwitchPreference android:key="ts_enabled"
+            android:defaultValue="false" android:title="@string/setting_ts_enabled"
+            android:summary="@string/summary_ts_enabled" />
+        <Preference android:key="ts_login" android:title="@string/setting_ts_login" />
+        <Preference android:key="ts_logout" android:title="@string/setting_ts_logout" />
+    </PreferenceScreen>
+
     <PreferenceScreen
         android:key="screen_development"
         android:title="Development">

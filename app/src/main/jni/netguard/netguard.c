@@ -39,6 +39,10 @@ static pthread_mutex_t wg_outbound_lock = PTHREAD_MUTEX_INITIALIZER;
 // failed start), ip.c drops hijack-eligible traffic instead of forwarding
 // it directly, so a WG restart never leaks traffic onto the raw network.
 _Atomic int wg_required = 0;
+static _Atomic int ts_enabled = 0;
+static _Atomic int ts_block_other_ipv6 = 0;
+static int ts_outbound_fd = -1;
+static pthread_mutex_t ts_outbound_lock = PTHREAD_MUTEX_INITIALIZER;
 int loglevel = ANDROID_LOG_WARN;
 
 extern int max_tun_msg;
@@ -227,9 +231,11 @@ Java_eu_faircode_netguard_ServiceSinkhole_jni_1run(
 
     log_android(ANDROID_LOG_WARN, "Running tun %d fwd53 %d level %d", tun, fwd53, loglevel);
 
-    // Set blocking
+    // A Tailscale reply writer shares this file description. It must not block
+    // while holding its lifecycle lock. The epoll reader already handles EAGAIN.
     int flags = fcntl(tun, F_GETFL, 0);
-    if (flags < 0 || fcntl(tun, F_SETFL, flags & ~O_NONBLOCK) < 0)
+    if (flags < 0 || fcntl(tun, F_SETFL,
+                          tailscale_is_enabled() ? flags | O_NONBLOCK : flags & ~O_NONBLOCK) < 0)
         log_android(ANDROID_LOG_ERROR, "fcntl tun ~O_NONBLOCK error %d: %s",
                     errno, strerror(errno));
 
@@ -399,6 +405,78 @@ JNIEXPORT void JNICALL
 Java_eu_faircode_netguard_ServiceSinkhole_jni_1sni(JNIEnv *env, jobject instance, jboolean enabled) {
     is_play = (enabled ? 1 : 0);
     log_android(ANDROID_LOG_WARN, "SNI extraction %s", is_play ? "enabled" : "disabled");
+}
+
+int tailscale_is_enabled(void) {
+    return atomic_load_explicit(&ts_enabled, memory_order_acquire);
+}
+
+int tailscale_blocks_other_ipv6(void) {
+    return atomic_load_explicit(&ts_block_other_ipv6, memory_order_acquire);
+}
+
+JNIEXPORT void JNICALL
+Java_eu_faircode_netguard_ServiceSinkhole_jni_1tailscale_1enabled(
+        JNIEnv *env, jobject instance, jboolean enabled, jboolean block_other_ipv6) {
+    atomic_store_explicit(&ts_block_other_ipv6, enabled && block_other_ipv6, memory_order_release);
+    atomic_store_explicit(&ts_enabled, enabled ? 1 : 0, memory_order_release);
+}
+
+// SEQPACKET preserves IP boundaries and wakes the Java reader at peer shutdown.
+JNIEXPORT jint JNICALL
+Java_eu_faircode_netguard_ServiceSinkhole_jni_1tailscale_1start(JNIEnv *env, jobject instance) {
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv) < 0)
+        return -1;
+    int flags = fcntl(sv[0], F_GETFL, 0);
+    if (flags < 0 || fcntl(sv[0], F_SETFL, flags | O_NONBLOCK) < 0) {
+        close(sv[0]);
+        close(sv[1]);
+        return -1;
+    }
+    if (pthread_mutex_lock(&ts_outbound_lock)) {
+        close(sv[0]);
+        close(sv[1]);
+        return -1;
+    }
+    if (ts_outbound_fd >= 0) {
+        pthread_mutex_unlock(&ts_outbound_lock);
+        close(sv[0]);
+        close(sv[1]);
+        return -1;
+    }
+    ts_outbound_fd = sv[0];
+    pthread_mutex_unlock(&ts_outbound_lock);
+    return sv[1];
+}
+
+void write_tailscale_packet(const void *packet, size_t length) {
+    if (pthread_mutex_lock(&ts_outbound_lock))
+        return;
+    if (ts_outbound_fd >= 0)
+        // Queue full, detached or disconnected all mean drop; never fall back.
+        send(ts_outbound_fd, packet, length, MSG_NOSIGNAL);
+    pthread_mutex_unlock(&ts_outbound_lock);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_eu_faircode_netguard_ServiceSinkhole_jni_1tailscale_1prepare_1tun(
+        JNIEnv *env, jobject instance, jint tun) {
+    int flags = fcntl(tun, F_GETFL, 0);
+    return flags >= 0 && fcntl(tun, F_SETFL, flags | O_NONBLOCK) == 0;
+}
+
+JNIEXPORT void JNICALL
+Java_eu_faircode_netguard_ServiceSinkhole_jni_1tailscale_1stop(JNIEnv *env, jobject instance) {
+    if (pthread_mutex_lock(&ts_outbound_lock))
+        return;
+    int fd = ts_outbound_fd;
+    ts_outbound_fd = -1;
+    if (fd >= 0) {
+        shutdown(fd, SHUT_RDWR);
+        close(fd);
+    }
+    pthread_mutex_unlock(&ts_outbound_lock);
 }
 
 // Allocate a SOCK_DGRAM socketpair: the C side keeps the write end (sv[0])

@@ -11,6 +11,18 @@ the WireGuard bridge additionally needs `cargo-ndk`. Gradle wires both Rust
 builds in but deliberately does not install tools or fetch crates. See
 `wgbridge-rs/README.md` for setup and F-Droid build metadata.
 
+Tailscale bindings also require Go 1.27.3, Python 3.10+, and the pinned
+gomobile/gobind version documented in `tailscale-go/README.md`. The regular
+compile/test/APK tasks run `tailscaleBuild` to build its AAR from source;
+tools must already be installed. Override tool paths with `-PgoBin=...`,
+`-PgomobileBin=...`, `-PgobindBin=...`, `-PpythonBin=...`, and optionally
+`-PandroidNdkPath=...`. The binding builder checks API23, four ABIs, and
+16 KB ELF load-segment alignment. See `scripts/build_tailscale_poc.py`.
+Tool inputs are resolved from the repository root and include the executables
+and Go compiler tools, so replacing a tool at the same path invalidates the AAR.
+`python scripts/test_tailscale_build_inputs.py` tests these Gradle cache rules
+using temporary fixtures; it needs a JDK but does not build an Android AAR.
+
 ## Flavours
 
 Three product flavours — **github**, **fdroid**, **play** — differ only in the
@@ -25,7 +37,7 @@ configuration, especially WireGuard profiles and the Mullvad login — see
 ```bash
 # From the repo root. Use ./gradlew (the wrapper).
 
-# Full debug APK (also triggers the native C + Rust builds):
+# Full debug APK (also triggers the native C + Rust + Go builds):
 ./gradlew assembleGithubDebug
 
 # Fast compile check while iterating on Java (what most PRs verify against):

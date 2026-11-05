@@ -1,11 +1,13 @@
 apply plugin: 'com.android.application'
 apply plugin: 'org.jetbrains.kotlin.plugin.compose'
 
-def ccacheLauncher = file("$projectDir/gradle/ccache-launcher.sh").absolutePath
+def ccacheLauncher = System.getProperty('os.name').startsWith('Windows') ? '' :
+        file("$projectDir/gradle/ccache-launcher.sh").absolutePath
 
 // WireGuard bridge (Rust/cargo-ndk) build logic. Defines the wgbridgeBuild
 // task and exposes ext.wgbridgeNdkVersion (reused for defaultConfig.ndkVersion).
 apply from: "$projectDir/gradle/wgbridge.gradle"
+apply from: "$projectDir/gradle/tailscale.gradle"
 
 // Resolves the lint tool artifacts while networking is available so release
 // builds can subsequently run with Gradle's --offline flag (as on F-Droid).
@@ -40,6 +42,7 @@ tasks.register('prefetchOfflineBuildClasspaths') {
 }
 
 android {
+    if (project.hasProperty('androidNdkPath')) ndkPath = project.property('androidNdkPath').toString()
     compileSdk = 37
 
     defaultConfig {

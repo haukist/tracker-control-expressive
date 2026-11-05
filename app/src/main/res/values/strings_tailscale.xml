@@ -1,0 +1,22 @@
+<resources>
+    <string name="setting_ts_title">Tailscale</string>
+    <string name="setting_ts_enabled">Enable Tailscale</string>
+    <string name="summary_ts_enabled">Connect to your Tailnet devices while keeping TrackerControl blocking. Normal internet traffic uses your current connection. Tailscale contacts its coordination and relay services. Starting protection replaces another active VPN. While enabled, 100.64.0.0/10 is reserved for Tailscale; carrier services using that range may be unavailable. Short device names use MagicDNS instead of local network DNS. Apps excluded from TrackerControl cannot use this connection.</string>
+    <string name="setting_ts_status">Connection status and addresses</string>
+    <string name="setting_ts_login">Sign in to Tailscale</string>
+    <string name="setting_ts_logout">Sign out and remove local identity</string>
+    <string name="msg_ts_logout_confirm">Remove this app’s local Tailscale keys and login state? TrackerControl blocking stays enabled. The device entry may remain in your Tailscale admin console.</string>
+    <string name="msg_ts_logout_failed">Could not remove all local Tailscale state. Try again after stopping protection.</string>
+    <string name="msg_ts_exclusive">Disable WireGuard and SOCKS5 before enabling Tailscale. Disable Tailscale before enabling either of them.</string>
+    <string name="msg_ts_profile_saved">Profile saved. Disable Tailscale before enabling WireGuard.</string>
+    <string name="msg_ts_start_protection">Start TrackerControl protection first, then return here to sign in.</string>
+    <string name="msg_ts_browser_failed">No browser could open the Tailscale sign-in page.</string>
+    <string name="ts_state_off">Off</string>
+    <string name="ts_state_waiting">Waiting for protection or connecting</string>
+    <string name="ts_state_login">Sign-in required</string>
+    <string name="ts_state_approval">Waiting for device approval</string>
+    <string name="ts_state_connected">Connected to Tailnet</string>
+    <string name="ts_state_error">Tailnet connection unavailable; overlay traffic is blocked</string>
+    <string name="ts_magicdns_off">MagicDNS is disabled in this Tailnet. Use device IP addresses.</string>
+    <string name="summary_sni_ts_note">Research mode does not collect SNI for Tailscale-routed traffic.</string>
+</resources>

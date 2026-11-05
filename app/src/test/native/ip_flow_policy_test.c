@@ -19,6 +19,9 @@ static int unexpected_handler_calls;
 static int policy_calls;
 static int uid_calls;
 static int wireguard_writes;
+static int tailscale_writes;
+static int tailscale_enabled;
+static int tailscale_block_other_ipv6;
 static int rst_writes;
 static int blocked_udp_calls;
 static int expect_direct;
@@ -26,6 +29,7 @@ static int direct_calls;
 static int configured_uid = 10042;
 static int policy_allowed = 1;
 static int blocked_udp;
+static int active_udp;
 static jint last_policy_uid = -1;
 static struct allowed allowed_empty;
 
@@ -158,9 +162,15 @@ struct allowed *is_address_allowed(const struct arguments *unused,
     return policy_allowed ? &allowed_empty : NULL;
 }
 
+int tailscale_is_enabled(void) { return tailscale_enabled; }
+int tailscale_blocks_other_ipv6(void) { return tailscale_block_other_ipv6; }
+void write_tailscale_packet(const void *packet, size_t length) { tailscale_writes++; }
+
 int write_wireguard_packet(const void *packet, size_t length,
                            ssize_t *written, int *write_errno) {
     (void) packet;
+    // Tailscale scenarios have no WireGuard socketpair attached.
+    if (!atomic_load(&wg_required)) return 0;
     wireguard_writes++;
     if (written != NULL)
         *written = (ssize_t) length;
@@ -197,7 +207,7 @@ int get_udp_session_state(const struct arguments *unused, const uint8_t *packet,
     (void) unused;
     (void) packet;
     (void) payload;
-    return blocked_udp ? UDP_BLOCKED : -1;
+    return blocked_udp ? UDP_BLOCKED : active_udp ? UDP_ACTIVE : -1;
 }
 
 void block_udp(const struct arguments *unused, const uint8_t *packet,
@@ -263,6 +273,9 @@ static void reset_fakes(void) {
     policy_calls = 0;
     uid_calls = 0;
     wireguard_writes = 0;
+    tailscale_writes = 0;
+    tailscale_enabled = 0;
+    tailscale_block_other_ipv6 = 0;
     rst_writes = 0;
     blocked_udp_calls = 0;
     expect_direct = 0;
@@ -271,6 +284,7 @@ static void reset_fakes(void) {
     unexpected_handler_calls = 0;
     last_policy_uid = -1;
     blocked_udp = 0;
+    active_udp = 0;
     configured_uid = 10042;
     policy_allowed = 1;
     route_flow_invalidate();
@@ -644,6 +658,96 @@ static void test_split_tunnel_routes_outside_allowed_ips_direct(void) {
           "full tunnel hands every destination to WireGuard again");
 }
 
+static void test_tailscale_tcp_revalidation(void) {
+    _Alignas(struct iphdr) uint8_t packet[256];
+    reset_fakes();
+    atomic_store(&wg_required, 0);
+    tailscale_enabled = 1;
+    size_t length = make_tcp(packet, 43000, 1, 0, 0, NULL, 0);
+    set_destination(packet, "100.64.1.2");
+    run(packet, length);
+    CHECK(policy_calls == 1 && tailscale_writes == 1 && wireguard_writes == 0,
+          "Tailscale SYN passes policy independently of WG routing");
+    length = make_tcp(packet, 43000, 0, 1, 0, NULL, 0);
+    set_destination(packet, "100.64.1.2");
+    run(packet, length);
+    CHECK(policy_calls == 1 && tailscale_writes == 2, "Tailscale caches allowed established TCP");
+    route_flow_invalidate();
+    policy_allowed = 0;
+    configured_uid = 0;
+    run(packet, length);
+    CHECK(policy_calls == 2 && tailscale_writes == 2 && rst_writes == 1,
+          "Tailscale established TCP rechecks policy after reload and drops blocked flow");
+    CHECK(last_policy_uid == 10042, "Tailscale retains the real socket owner");
+    run(packet, length);
+    CHECK(policy_calls == 2 && tailscale_writes == 2 && rst_writes == 1,
+          "Tailscale blocked cache neither forwards nor repeats resets");
+    atomic_store(&wg_required, 1);
+}
+
+static void test_tailscale_dns_policy_and_native_sessions(void) {
+    _Alignas(struct iphdr) uint8_t packet[256];
+    reset_fakes();
+    atomic_store(&wg_required, 0);
+    tailscale_enabled = 1;
+    policy_allowed = 0;
+    size_t length = make_tcp(packet, 43002, 1, 0, 0, NULL, 0);
+    set_destination(packet, "100.64.1.2");
+    struct tcphdr *tcp = (struct tcphdr *) (packet + sizeof(struct iphdr));
+    tcp->dest = htons(53);
+    run(packet, length);
+    tcp->syn = 0;
+    tcp->ack = 1;
+    run(packet, length);
+    CHECK(policy_calls == 1 && tailscale_writes == 0 && direct_calls == 0,
+          "blocked Tailnet TCP DNS never forwards subsequent non-SYN packets");
+
+    // A redirected TCP DNS flow already owns a native proxy session. Its ACK
+    // must go to that session even though no new redirect is returned here.
+    struct iphdr *ip = (struct iphdr *) packet;
+    struct ng_session session = {0};
+    session.protocol = IPPROTO_TCP;
+    session.tcp.version = 4;
+    session.tcp.source = tcp->source;
+    session.tcp.dest = tcp->dest;
+    session.tcp.saddr.ip4 = ip->saddr;
+    session.tcp.daddr.ip4 = ip->daddr;
+    context.ng_session = &session;
+    route_flow_invalidate();
+    policy_allowed = 1;
+    expect_direct = 1;
+    run(packet, length);
+    CHECK(direct_calls == 1 && tailscale_writes == 0,
+          "existing Tailnet TCP DNS retains its native proxy session");
+    context.ng_session = NULL;
+
+    length = make_udp(packet, 43003, NULL, 0);
+    set_destination(packet, "100.64.1.2");
+    ((struct udphdr *) (packet + sizeof(struct iphdr)))->dest = htons(53);
+    active_udp = 1;
+    run(packet, length);
+    CHECK(direct_calls == 2 && tailscale_writes == 0,
+          "existing Tailnet UDP DNS retains its native proxy session");
+    atomic_store(&wg_required, 1);
+}
+
+static void test_tailscale_ipv6_preserves_ipv6_disabled_setting(void) {
+    _Alignas(struct ip6_hdr) uint8_t packet[256];
+    reset_fakes();
+    atomic_store(&wg_required, 0);
+    tailscale_enabled = 1;
+    tailscale_block_other_ipv6 = 1;
+    size_t length = make_tcp6(packet, 43001, 1, 0, 0, NULL, 0);
+    run(packet, length);
+    CHECK(policy_calls == 0 && tailscale_writes == 0 && unexpected_handler_calls == 0,
+          "ordinary IPv6 stays blocked while Tailnet IPv6 is enabled");
+    inet_pton(AF_INET6, "fd7a:115c:a1e0::2", &((struct ip6_hdr *) packet)->ip6_dst);
+    run(packet, length);
+    CHECK(policy_calls == 1 && tailscale_writes == 1 && wireguard_writes == 0,
+          "Tailnet ULA still reaches its own egress with ordinary IPv6 disabled");
+    atomic_store(&wg_required, 1);
+}
+
 int main(void) {
     memset(&context, 0, sizeof(context));
     memset(&args, 0, sizeof(args));
@@ -662,6 +766,9 @@ int main(void) {
     test_udp_policy_invalidation_and_negative_state();
     test_selected_route_fast_path();
     test_split_tunnel_routes_outside_allowed_ips_direct();
+    test_tailscale_tcp_revalidation();
+    test_tailscale_dns_policy_and_native_sessions();
+    test_tailscale_ipv6_preserves_ipv6_disabled_setting();
     if (failures != 0)
         return 1;
     puts("ip_flow_policy_test: all tests passed");

@@ -412,7 +412,7 @@ public class ServiceSinkhole extends VpnService {
     }
 
     public enum Command {
-        run, start, reload, stop, stats, set, householding, doh_error
+        run, start, reload, stop, stats, set, householding, doh_error, tailscale_login, tailscale_logout
     }
 
     private static volatile PowerManager.WakeLock wlInstance = null;
@@ -463,6 +463,11 @@ public class ServiceSinkhole extends VpnService {
     private native void jni_socks5(String addr, int port, String username, String password);
 
     private native void jni_sni(boolean enabled);
+
+    private native void jni_tailscale_enabled(boolean enabled, boolean blockOtherIpv6);
+    private native int jni_tailscale_start();
+    private native boolean jni_tailscale_prepare_tun(int fd);
+    private native void jni_tailscale_stop();
 
     /** Allocate the WG egress socketpair; returns the read-end fd to hand to wgbridge,
      *  or -1 on failure. The C side retains the write end and flips wg_enabled. */
@@ -692,6 +697,17 @@ public class ServiceSinkhole extends VpnService {
 
             try {
                 switch (cmd) {
+                    case tailscale_login:
+                        if (vpn != null && prefs.getBoolean("ts_enabled", false))
+                            net.kollnig.missioncontrol.tailscale.TailscaleManager.login();
+                        break;
+
+                    case tailscale_logout:
+                        if (vpn != null) stopNative(vpn);
+                        net.kollnig.missioncontrol.tailscale.TailscaleManager.logout(ServiceSinkhole.this);
+                        if (vpn != null) reload(false);
+                        break;
+
                     case run:
                         break;
 
@@ -793,6 +809,7 @@ public class ServiceSinkhole extends VpnService {
         }
 
         private void start() {
+            validateEgressPreferences();
             // Expired pauses must be resolved before the first rule snapshot is
             // built; the service command handler already runs off the UI thread.
             PausedApps.sweep(ServiceSinkhole.this);
@@ -825,6 +842,7 @@ public class ServiceSinkhole extends VpnService {
         }
 
         private void reload(boolean interactive) {
+            validateEgressPreferences();
             List<Rule> listRule = Rule.getRules(true, ServiceSinkhole.this);
 
             SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ServiceSinkhole.this);
@@ -932,6 +950,10 @@ public class ServiceSinkhole extends VpnService {
                 // Stop DoH proxy
                 net.kollnig.missioncontrol.dns.DnsProxyServer.getInstance(ServiceSinkhole.this).stop();
             }
+            jni_tailscale_stop();
+            net.kollnig.missioncontrol.tailscale.TailscaleManager.detach();
+            net.kollnig.missioncontrol.tailscale.TailscaleManager.stop();
+            jni_tailscale_enabled(false, false);
             if (!temporary) {
                 resetPrivateDnsBypassWarning();
             }
@@ -1849,6 +1871,9 @@ public class ServiceSinkhole extends VpnService {
         // 10.1.10.1 makes the peer drop everything (handshake works, but no
         // data ever flows back).
         boolean wgEnabled = prefs.getBoolean("wg_enabled", false);
+        boolean tsEnabled = prefs.getBoolean("ts_enabled", false);
+        net.kollnig.missioncontrol.tailscale.TailscaleSnapshot tsSnapshot =
+                net.kollnig.missioncontrol.tailscale.TailscaleManager.snapshot();
         String wgConfigText = wgEnabled ? prefs.getString("wg_config", "") : "";
         net.kollnig.missioncontrol.wg.WgConfig wgParsed = null;
         String wgVpn4 = null;
@@ -1877,11 +1902,13 @@ public class ServiceSinkhole extends VpnService {
                 Log.w(TAG, "WG config parse failed for builder: " + ex.getMessage());
             }
         }
-        String vpn4 = wgVpn4 != null ? wgVpn4 : prefs.getString("vpn4", "10.1.10.1");
+        String vpn4 = tsEnabled && !tsSnapshot.ipv4.isEmpty() ? tsSnapshot.ipv4
+                : wgVpn4 != null ? wgVpn4 : prefs.getString("vpn4", "10.1.10.1");
         Log.i(TAG, "Using VPN4=" + vpn4 + (wgVpn4 != null ? " (from WG config)" : ""));
         builder.addAddress(vpn4, 32);
-        if (ip6) {
-            String vpn6 = wgVpn6 != null ? wgVpn6
+        if (ip6 || tsEnabled) {
+            String vpn6 = tsEnabled && !tsSnapshot.ipv6.isEmpty() ? tsSnapshot.ipv6
+                    : wgVpn6 != null ? wgVpn6
                     : prefs.getString("vpn6", "fd00:1:fd00:1:fd00:1:fd00:1");
             Log.i(TAG, "Using VPN6=" + vpn6 + (wgVpn6 != null ? " (from WG config)" : ""));
             builder.addAddress(vpn6, 128);
@@ -1927,6 +1954,7 @@ public class ServiceSinkhole extends VpnService {
             routes = VpnRoutes.getTetheringRoutes();
         } else
             routes = VpnRoutes.getRoutes();
+        if (tsEnabled) routes = VpnRoutes.withTailscale(routes);
         for (IPUtil.CIDR route : routes)
             try {
                 builder.addRoute(route.address, route.prefix);
@@ -2033,9 +2061,14 @@ public class ServiceSinkhole extends VpnService {
         Log.i(TAG, "IPv6=" + ip6);
         if (ip6)
             builder.addRoute("2000::", 3); // unicast
+        if (tsEnabled) {
+            builder.addRoute("fd7a:115c:a1e0::", 48);
+            if (!ip6) builder.addRoute("::", 0); // Native drops non-overlay IPv6.
+        }
 
         // MTU
         int mtu = jni_get_mtu();
+        if (tsEnabled) mtu = 1280;
         if (wgEnabled) {
             // WG default is 1420 (1500 path MTU minus typical WG+UDP+IP overhead).
             // Allow the config's [Interface] MTU to override but never exceed
@@ -2095,7 +2128,7 @@ public class ServiceSinkhole extends VpnService {
 
         builder.addAddress("192.0.2.1", 32);
         builder.addRoute("0.0.0.0", 0);
-        if (ip6) {
+        if (ip6 || prefs.getBoolean("ts_enabled", false)) {
             builder.addAddress("2001:db8::1", 128);
             builder.addRoute("::", 0);
         }
@@ -2120,8 +2153,22 @@ public class ServiceSinkhole extends VpnService {
         return builder;
     }
 
+    private void validateEgressPreferences() {
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        if (net.kollnig.missioncontrol.vpn.VpnEgressPolicy.hasConflict(prefs))
+            throw new IllegalStateException(getString(R.string.msg_ts_exclusive));
+    }
+
     private boolean startNative(final ParcelFileDescriptor vpn, List<Rule> listAllowed, List<Rule> listRule) {
+        validateEgressPreferences();
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ServiceSinkhole.this);
+        boolean tailscaleEnabled = prefs.getBoolean("ts_enabled", false);
+        jni_tailscale_enabled(tailscaleEnabled, !prefs.getBoolean("ip6", true));
+        if (tailscaleEnabled)
+            net.kollnig.missioncontrol.tailscale.TailscaleManager.start(this,
+                    () -> ServiceSinkhole.reload("Tailscale address changed", this, false));
+        else
+            net.kollnig.missioncontrol.tailscale.TailscaleManager.stop();
         boolean log = prefs.getBoolean("log", false);
         boolean log_app = prefs.getBoolean("log_app", true);
         boolean tcpMssClamp = prefs.getBoolean("tcp_mss_clamp", false);
@@ -2129,6 +2176,7 @@ public class ServiceSinkhole extends VpnService {
                 " filter=true tcp_mss_clamp=" + tcpMssClamp);
 
         // Prepare rules
+        updateDnsProxyState();
         prepareUidAllowed(listAllowed, listRule);
         prepareHostsBlocked(ServiceSinkhole.this);
         prepareForwarding();
@@ -2223,6 +2271,23 @@ public class ServiceSinkhole extends VpnService {
         cancelWireGuardStartupRecovery(true);
         net.kollnig.missioncontrol.wg.VpnKeyRotationManager.maybeRotateDue(ServiceSinkhole.this);
 
+        if (tailscaleEnabled) {
+            try {
+                if (!jni_tailscale_prepare_tun(vpn.getFd()))
+                    throw new java.io.IOException("Tailscale TUN unavailable");
+                int packets = jni_tailscale_start();
+                if (packets < 0) throw new java.io.IOException("Tailscale packet bridge unavailable");
+                net.kollnig.missioncontrol.tailscale.TailscaleManager.attach(vpn, packets);
+            } catch (java.io.IOException ex) {
+                jni_tailscale_stop();
+                net.kollnig.missioncontrol.tailscale.TailscaleManager.detach();
+                net.kollnig.missioncontrol.tailscale.TailscaleManager.stop();
+                net.kollnig.missioncontrol.tailscale.TailscaleManager.reportUnavailable();
+                // Keep capturing Tailnet destinations: bridge failure means drop,
+                // while ordinary Internet traffic can still use the firewall.
+            }
+        }
+
         if (tunnelThread == null) {
             Log.i(TAG, "Starting tunnel thread context=" + jni_context);
             jni_start(jni_context, prio, tcpMssClamp);
@@ -2248,6 +2313,8 @@ public class ServiceSinkhole extends VpnService {
 
     private void stopNative(ParcelFileDescriptor vpn) {
         Log.i(TAG, "Stop native");
+        jni_tailscale_stop();
+        net.kollnig.missioncontrol.tailscale.TailscaleManager.detach();
 
         if (tunnelThread != null) {
             Log.i(TAG, "Stopping tunnel thread");
@@ -2554,7 +2621,8 @@ public class ServiceSinkhole extends VpnService {
         // includes configs without a DNS line: getBuilder() installs a
         // protected public fallback for those configs, and the DoH client is
         // excluded from this VPN so it cannot be safely chained through WG.
-        if (prefs.getBoolean("doh_enabled", false) && !hasActiveWireGuard(prefs)) {
+        if ((prefs.getBoolean("doh_enabled", false) || prefs.getBoolean("ts_enabled", false))
+                && !hasActiveWireGuard(prefs)) {
             Forward dnsFwd = new Forward();
             dnsFwd.protocol = 17; // UDP
             dnsFwd.dport = 53;
@@ -4351,6 +4419,10 @@ public class ServiceSinkhole extends VpnService {
                 net.kollnig.missioncontrol.wg.WgEgress.INSTANCE.stop(
                         () -> { jni_wireguard_stop(); return kotlin.Unit.INSTANCE; });
                 jni_wireguard_required(false);
+                jni_tailscale_stop();
+                net.kollnig.missioncontrol.tailscale.TailscaleManager.detach();
+                net.kollnig.missioncontrol.tailscale.TailscaleManager.stop();
+                jni_tailscale_enabled(false, false);
                 net.kollnig.missioncontrol.dns.DnsProxyServer.getInstance(ServiceSinkhole.this).stop();
             } catch (Throwable ex) {
                 Log.e(TAG, ex.toString() + "\n" + Log.getStackTraceString(ex));
@@ -5063,6 +5135,13 @@ public class ServiceSinkhole extends VpnService {
                     Log.e(TAG, exex + "\n" + Log.getStackTraceString(exex));
                 }
         }
+    }
+
+    public static void tailscaleAuthentication(Context context, boolean logout) {
+        Intent intent = new Intent(context, ServiceSinkhole.class);
+        intent.putExtra(EXTRA_COMMAND, logout ? Command.tailscale_logout : Command.tailscale_login);
+        intent.putExtra(EXTRA_REASON, "Tailscale authentication");
+        ContextCompat.startForegroundService(context, intent);
     }
 
     public static void start(String reason, Context context) {

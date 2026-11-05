@@ -384,7 +384,14 @@ public class VpnFragment extends Fragment implements SharedPreferences.OnSharedP
         refreshUi();
     }
 
+    private boolean canEnableWireGuard() {
+        if (VpnEgressPolicy.canEnable(prefs, "wg_enabled")) return true;
+        Toast.makeText(requireContext(), R.string.msg_ts_exclusive, Toast.LENGTH_LONG).show();
+        return false;
+    }
+
     private void activateCustomProfile(WgProfileManager.Profile profile) {
+        if (!canEnableWireGuard()) return;
         manager.setActiveProfile(profile.id);
         prefs.edit()
                 .putBoolean("wg_enabled", true)
@@ -403,6 +410,7 @@ public class VpnFragment extends Fragment implements SharedPreferences.OnSharedP
     }
 
     private void generateMullvadCountry(VpnCountry country) {
+        if (!canEnableWireGuard()) return;
         String account = manager.getLastMullvadAccount();
         if (TextUtils.isEmpty(account)) {
             showMullvadSettingsDialog();
@@ -442,6 +450,7 @@ public class VpnFragment extends Fragment implements SharedPreferences.OnSharedP
     }
 
     private void generateIvpnCountry(VpnCountry country, String captchaId, String captchaValue) {
+        if (!canEnableWireGuard()) return;
         String account = manager.getLastIvpnAccount();
         if (TextUtils.isEmpty(account)) {
             showIvpnSettingsDialog(null, "", "", country);
@@ -490,6 +499,7 @@ public class VpnFragment extends Fragment implements SharedPreferences.OnSharedP
     }
 
     private void saveGeneratedProfile(MullvadProfileGenerator.GeneratedProfile generated) {
+        boolean activate = VpnEgressPolicy.canEnable(prefs, "wg_enabled");
         try {
             WgProfileManager.Profile existing =
                     manager.findMullvadProfileForCountry(generated.countryCode);
@@ -501,12 +511,16 @@ public class VpnFragment extends Fragment implements SharedPreferences.OnSharedP
                     "mullvad",
                     generated.accountNumber,
                     generated.countryCode,
-                    generated.countryName);
-            prefs.edit()
+                    generated.countryName, activate);
+            if (activate) {
+                prefs.edit()
                     .putBoolean("wg_enabled", true)
                     .putString(PREF_VPN_MODE, MODE_MULLVAD)
                     .apply();
-            ServiceSinkhole.reload("wireguard profile changed", requireContext(), false);
+                ServiceSinkhole.reload("wireguard profile changed", requireContext(), false);
+            } else {
+                Toast.makeText(requireContext(), R.string.msg_ts_profile_saved, Toast.LENGTH_LONG).show();
+            }
             generatingCountryCode = "";
             generatingProvider = "";
             clearProgress();
@@ -520,6 +534,7 @@ public class VpnFragment extends Fragment implements SharedPreferences.OnSharedP
     }
 
     private void saveGeneratedIvpnProfile(IvpnProfileGenerator.GeneratedProfile generated) {
+        boolean activate = VpnEgressPolicy.canEnable(prefs, "wg_enabled");
         try {
             WgProfileManager.Profile existing =
                     manager.findIvpnProfileForCountry(generated.countryCode);
@@ -531,12 +546,16 @@ public class VpnFragment extends Fragment implements SharedPreferences.OnSharedP
                     "ivpn",
                     generated.accountNumber,
                     generated.countryCode,
-                    generated.countryName);
-            prefs.edit()
+                    generated.countryName, activate);
+            if (activate) {
+                prefs.edit()
                     .putBoolean("wg_enabled", true)
                     .putString(PREF_VPN_MODE, MODE_IVPN)
                     .apply();
-            ServiceSinkhole.reload("wireguard profile changed", requireContext(), false);
+                ServiceSinkhole.reload("wireguard profile changed", requireContext(), false);
+            } else {
+                Toast.makeText(requireContext(), R.string.msg_ts_profile_saved, Toast.LENGTH_LONG).show();
+            }
             generatingCountryCode = "";
             generatingProvider = "";
             clearProgress();
@@ -1022,6 +1041,10 @@ public class VpnFragment extends Fragment implements SharedPreferences.OnSharedP
             holder.switchView.setOnCheckedChangeListener(null);
             holder.switchView.setChecked(enabled);
             holder.switchView.setOnCheckedChangeListener((buttonView, checked) -> {
+                if (checked && !canEnableWireGuard()) {
+                    holder.switchView.setChecked(false);
+                    return;
+                }
                 if (checked && manager.getActiveProfile() == null) {
                     holder.switchView.setChecked(false);
                     if (isFirstTimeVpnSetup()) {
