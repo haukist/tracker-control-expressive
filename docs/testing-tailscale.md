@@ -113,6 +113,24 @@ APKの出力先は `app/build/outputs/apk/github/debug/TrackerControl-githubDebu
 修正版APKのSHA-256:
 `dfe15807d5bbb0daaed9ca13f207f4c5cf55886a54d97d3e50cd016fc13904b5`。
 
+## Gemini 4指摘の検証・修正版（2026-11-05）
+
+指摘ごとの判定と修正内容は [検証報告](review-tailscale-gemini4.md) を参照。
+上記のAPKは、この修正版で上書きしている。
+
+- JVMテスト527件、失敗・エラー0。設定インポート、TCP DNS、接続通知、
+  ログイン待ち・ログアウトの回帰テストを含む。
+- WSL Ubuntuのネイティブ防御テストが成功。送信バッファが満杯の状態からの
+  書き込み回復、停止による待機解除も検証した。
+- Goの競合検出付きテストとvetが成功。
+- `:app:assembleGithubDebug` と `:app:lintGithubDebug` が成功。
+  Lintはエラー0（警告55件、その他14件）。
+- このAPKでの実機バースト負荷、回線切り替え、消灯時の消費電力は未測定。
+  過去のエミュレーター操作の結果と、この修正版の自動テスト結果は区別する。
+
+最新APKのSHA-256:
+`f49a911d3ceeb9ab3e8818b1ea122308d2f7ed6c140432c8b0229295e4c974c6`。
+
 ## コードレビューの記録
 
 `gemini-code-review` のGemini 3.8 Flash（medium）で差分を分割し、
@@ -126,3 +144,7 @@ JNI連携部分がCLIの300秒制限で未完了だった。
 2026-11-05のClaude Sonnet 5.5（medium）による12分割レビューではこの範囲も確認した。
 今回の排他制御・ビルド入力追跡の修正も、Gemini 3.8 Flash / Claude Sonnet 5.5
 （ともにmedium）で差分を再確認した。追加した非アクティブ保存は範囲を絞って再レビューした。
+
+その後のGemini 4指摘対応も、Gemini 3.8 Flash（medium）で4範囲に分けて
+新規ファイルを含めて確認した。ネイティブ範囲は初回の時間切れ後、再実行で完了。
+追加指摘の照合結果は [検証報告](review-tailscale-gemini4.md) を参照。

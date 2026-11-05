@@ -110,7 +110,9 @@ func resolveLocalDNS(query []byte, status *ipnstate.Status) ([]byte, error) {
 	ptr := ""
 	for name, ips := range addresses {
 		for _, ip := range ips {
-			if isReverse && ip == reverse {
+			// Duplicate ownership is not expected in a normal Tailnet. Keep
+			// malformed/overlapping status deterministic instead of map-order dependent.
+			if isReverse && ip == reverse && (ptr == "" || name < ptr) {
 				ptr = name
 			}
 		}

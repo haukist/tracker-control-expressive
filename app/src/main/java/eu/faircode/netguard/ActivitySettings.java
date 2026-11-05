@@ -648,6 +648,7 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
     @Override
     protected void onPause() {
         super.onPause();
+        if (tailscaleSettings != null) tailscaleSettings.cancelPendingLogin();
 
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
         prefs.unregisterOnSharedPreferenceChangeListener(this);
@@ -1557,6 +1558,12 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
     }
 
     private void xmlImport(InputStream in) throws IOException, SAXException, ParserConfigurationException {
+        XMLReader reader = SAXParserFactory.newInstance().newSAXParser().getXMLReader();
+        XmlImportHandler handler = new XmlImportHandler(this);
+        reader.setContentHandler(handler);
+        reader.parse(new InputSource(in));
+        validateImportedEgress(this, handler.application);
+
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
         boolean wasEnabled = prefs.getBoolean("enabled", false);
         prefs.unregisterOnSharedPreferenceChangeListener(this);
@@ -1565,11 +1572,6 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
 
         boolean applied = false;
         try {
-            XMLReader reader = SAXParserFactory.newInstance().newSAXParser().getXMLReader();
-            XmlImportHandler handler = new XmlImportHandler(this);
-            reader.setContentHandler(handler);
-            reader.parse(new InputSource(in));
-
             // Only now that the whole file has parsed successfully do we
             // touch the forwarding rules, so a malformed file never leaves
             // the old rules deleted with no replacement.
@@ -1616,6 +1618,15 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
             throw ex;
         } finally {
             prefs.registerOnSharedPreferenceChangeListener(this);
+        }
+    }
+
+    static void validateImportedEgress(Context context, Map<String, ?> settings) throws SAXException {
+        try {
+            if (net.kollnig.missioncontrol.vpn.VpnEgressPolicy.hasConflict(settings))
+                throw new SAXException(context.getString(R.string.msg_ts_exclusive));
+        } catch (IllegalArgumentException ex) {
+            throw new SAXException(ex.getMessage(), ex);
         }
     }
 
@@ -1693,7 +1704,7 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
         }
 
         @Override
-        public void startElement(String uri, String localName, String qName, Attributes attributes) {
+        public void startElement(String uri, String localName, String qName, Attributes attributes) throws SAXException {
             if (qName.equals("netguard")
                     || qName.equals("trackercontrol"))
                 ; // Ignore
@@ -1742,6 +1753,12 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
                 String key = attributes.getValue("key");
                 String type = attributes.getValue("type");
                 String value = attributes.getValue("value");
+
+                if (current == application && ("ts_enabled".equals(key)
+                        || "wg_enabled".equals(key) || "socks5_enabled".equals(key))) {
+                    if (!"boolean".equals(type) || !("true".equalsIgnoreCase(value) || "false".equalsIgnoreCase(value)))
+                        throw new SAXException("Invalid boolean VPN setting: " + key);
+                }
 
                 if (current == null)
                     Log.e(TAG, "No current key=" + key);

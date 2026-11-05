@@ -44,3 +44,4 @@ compile ip_flow_policy_test app/src/test/native/ip_flow_policy_test.c \
     app/src/main/jni/netguard/ip6_ext.c app/src/main/jni/netguard/tls.c \
     -Wl,--wrap=dlopen -Wl,--wrap=dlsym -ldl -pthread
 compile tailscale_route_test app/src/test/native/tailscale_route_test.c
+compile tun_io_test app/src/test/native/tun_io_test.c -Wl,--wrap=write -pthread

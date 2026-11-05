@@ -56,6 +56,31 @@ func TestLocalMagicDNS(t *testing.T) {
 	}
 }
 
+func TestDuplicateReverseOwnersAreDeterministic(t *testing.T) {
+	status := dnsStatus()
+	status.Peer[key.NewNode().Public()] = &ipnstate.PeerStatus{
+		DNSName: "aaa.home.ts.net.", TailscaleIPs: []netip.Addr{netip.MustParseAddr("100.64.1.2")},
+	}
+	query := dnsQuery(t, "2.1.64.100.in-addr.arpa.", dnsmessage.TypePTR)
+	for i := 0; i < 64; i++ {
+		response, err := resolveLocalDNS(query, status)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var message dnsmessage.Message
+		if err := message.Unpack(response); err != nil {
+			t.Fatal(err)
+		}
+		if len(message.Answers) != 1 {
+			t.Fatalf("answers: %v", message.Answers)
+		}
+		ptr, ok := message.Answers[0].Body.(*dnsmessage.PTRResource)
+		if !ok || ptr.PTR.String() != "aaa.home.ts.net." {
+			t.Fatalf("non-deterministic duplicate owner: %v", message.Answers[0])
+		}
+	}
+}
+
 func TestLocalDNSNeverForwardsFailures(t *testing.T) {
 	for _, name := range []string{"missing.home.ts.net.", "missing.", "99.1.64.100.in-addr.arpa."} {
 		response, err := resolveLocalDNS(dnsQuery(t, name, dnsmessage.TypeA), dnsStatus())

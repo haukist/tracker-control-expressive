@@ -22,6 +22,7 @@ import org.robolectric.annotation.Config;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.net.DatagramPacket;
@@ -29,7 +30,10 @@ import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.ServerSocket;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -324,6 +328,116 @@ public class DnsProxyServerTest {
         assertFalse(proxy.isRunning());
     }
 
+    @Test
+    public void truncatedUdpCanRetryOverTcpAndReceiveFullPlainDnsAnswer() throws Exception {
+        byte[] query = plainQuery();
+        byte[] answer = largeAnswer(query);
+        try (PlainUpstream upstream = new PlainUpstream(query, answer)) {
+            proxy = new DnsProxyServer(RuntimeEnvironment.getApplication(), ignored -> null,
+                    () -> Collections.singletonList(upstream.address()));
+            prefs.edit().putBoolean("ts_enabled", true).commit();
+            proxy.start();
+            byte[] udp = queryUdp(query);
+            assertTrue((udp[2] & 2) != 0);
+            assertArrayEquals(answer, queryTcp(query));
+            assertEquals(1, upstream.udpQueries.get());
+            assertEquals(1, upstream.tcpQueries.get());
+        }
+    }
+
+    @Test
+    public void plainTcpRejectsWrongTransactionAndTriesNextServer() throws Exception {
+        byte[] query = plainQuery();
+        byte[] good = largeAnswer(query);
+        byte[] wrong = good.clone();
+        wrong[0] ^= 1;
+        try (PlainUpstream first = new PlainUpstream(query, wrong);
+             PlainUpstream second = new PlainUpstream(query, good)) {
+            proxy = new DnsProxyServer(RuntimeEnvironment.getApplication(), ignored -> null,
+                    () -> Arrays.asList(first.address(), second.address()));
+            prefs.edit().putBoolean("ts_enabled", true).commit();
+            proxy.start();
+            assertArrayEquals(good, queryTcp(query));
+            assertEquals(1, first.tcpQueries.get());
+            assertEquals(1, second.tcpQueries.get());
+            assertEquals(0, first.udpQueries.get() + second.udpQueries.get());
+        }
+    }
+
+    private static byte[] plainQuery() throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        DataOutputStream out = new DataOutputStream(bytes);
+        out.writeShort(0x1234); out.writeShort(0x0100); out.writeShort(1);
+        out.writeShort(0); out.writeShort(0); out.writeShort(0);
+        out.writeByte(7); out.writeBytes("example");
+        out.writeByte(4); out.writeBytes("test"); out.writeByte(0);
+        out.writeShort(1); out.writeShort(1);
+        return bytes.toByteArray();
+    }
+
+    private static byte[] largeAnswer(byte[] query) throws IOException {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        bytes.write(query);
+        DataOutputStream out = new DataOutputStream(bytes);
+        for (int i = 0; i < 40; i++) {
+            out.writeShort(0xc00c); out.writeShort(1); out.writeShort(1);
+            out.writeInt(60); out.writeShort(4); out.writeInt(0xc0000200 + i);
+        }
+        byte[] answer = bytes.toByteArray();
+        answer[2] = (byte) 0x81; answer[3] = (byte) 0x80; answer[7] = 40;
+        return answer;
+    }
+
+    private static final class PlainUpstream implements AutoCloseable {
+        final AtomicInteger udpQueries = new AtomicInteger();
+        final AtomicInteger tcpQueries = new AtomicInteger();
+        final ServerSocket tcp;
+        final DatagramSocket udp;
+        final Thread tcpThread, udpThread;
+
+        PlainUpstream(byte[] query, byte[] answer) throws IOException {
+            InetAddress loopback = InetAddress.getByName("127.0.0.1");
+            tcp = new ServerSocket(0, 8, loopback);
+            udp = new DatagramSocket(new InetSocketAddress(loopback, tcp.getLocalPort()));
+            tcpThread = new Thread(() -> {
+                try {
+                    while (!tcp.isClosed()) {
+                        try (Socket connection = tcp.accept()) {
+                            connection.setSoTimeout(2000);
+                            DataInputStream in = new DataInputStream(connection.getInputStream());
+                            byte[] request = new byte[in.readUnsignedShort()];
+                            in.readFully(request);
+                            tcpQueries.incrementAndGet();
+                            DataOutputStream out = new DataOutputStream(connection.getOutputStream());
+                            out.writeShort(answer.length); out.write(answer); out.flush();
+                        }
+                    }
+                } catch (IOException ignored) { }
+            }, "Test DNS TCP");
+            udpThread = new Thread(() -> {
+                try {
+                    while (!udp.isClosed()) {
+                        DatagramPacket request = new DatagramPacket(new byte[4096], 4096);
+                        udp.receive(request);
+                        udpQueries.incrementAndGet();
+                        byte[] truncated = query.clone();
+                        truncated[2] = (byte) 0x83;
+                        udp.send(new DatagramPacket(truncated, truncated.length, request.getSocketAddress()));
+                    }
+                } catch (IOException ignored) { }
+            }, "Test DNS UDP");
+            tcpThread.start(); udpThread.start();
+        }
+
+        InetSocketAddress address() { return new InetSocketAddress("127.0.0.1", tcp.getLocalPort()); }
+
+        public void close() throws Exception {
+            tcp.close(); udp.close();
+            tcpThread.join(2000); udpThread.join(2000);
+            assertFalse(tcpThread.isAlive()); assertFalse(udpThread.isAlive());
+        }
+    }
+
     private void startProxy(String endpoint) {
         prefs.edit()
                 .putBoolean("doh_enabled", true)
@@ -335,10 +449,14 @@ public class DnsProxyServerTest {
     }
 
     private byte[] queryUdp() throws IOException {
+        return queryUdp(QUERY);
+    }
+
+    private byte[] queryUdp(byte[] query) throws IOException {
         try (DatagramSocket socket = new DatagramSocket()) {
             socket.setSoTimeout(5000);
             DatagramPacket request = new DatagramPacket(
-                    QUERY, QUERY.length, InetAddress.getByName(DnsProxyServer.DNS_PROXY_ADDRESS),
+                    query, query.length, InetAddress.getByName(DnsProxyServer.DNS_PROXY_ADDRESS),
                     DnsProxyServer.DNS_PROXY_PORT);
             socket.send(request);
 
@@ -350,14 +468,18 @@ public class DnsProxyServerTest {
     }
 
     private byte[] queryTcp() throws IOException {
+        return queryTcp(QUERY);
+    }
+
+    private byte[] queryTcp(byte[] query) throws IOException {
         try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress(
                     InetAddress.getByName(DnsProxyServer.DNS_PROXY_ADDRESS),
                     DnsProxyServer.DNS_PROXY_PORT), 5000);
             socket.setSoTimeout(5000);
             DataOutputStream out = new DataOutputStream(socket.getOutputStream());
-            out.writeShort(QUERY.length);
-            out.write(QUERY);
+            out.writeShort(query.length);
+            out.write(query);
             out.flush();
 
             DataInputStream in = new DataInputStream(socket.getInputStream());

@@ -65,13 +65,7 @@ public final class TailscaleSettings {
                     .setNegativeButton(android.R.string.cancel, null)
                     .setPositiveButton(android.R.string.ok, (dialog, which) -> {
                         awaitingLogin = false;
-                        if (prefs.getBoolean("enabled", false))
-                            ServiceSinkhole.tailscaleAuthentication(activity, true);
-                        else
-                            new Thread(() -> {
-                                try { TailscaleManager.logout(activity.getApplicationContext()); }
-                                catch (Exception ex) { activity.runOnUiThread(() -> toast(R.string.msg_ts_logout_failed)); }
-                            }, "Tailscale logout").start();
+                        ServiceSinkhole.tailscaleAuthentication(activity, true);
                     }).show();
             return true;
         });
@@ -82,6 +76,8 @@ public final class TailscaleSettings {
         if (screen == null) return;
         TailscaleSnapshot state = TailscaleManager.snapshot();
         boolean enabled = prefs.getBoolean("ts_enabled", false);
+        if (!enabled || !prefs.getBoolean("enabled", false) || !state.error.isEmpty()
+                || state.state.equals("Running")) awaitingLogin = false;
         int status = R.string.ts_state_waiting;
         if (!enabled) status = R.string.ts_state_off;
         else if (!state.error.isEmpty()) status = R.string.ts_state_error;
@@ -113,6 +109,8 @@ public final class TailscaleSettings {
         catch (RuntimeException ex) { toast(R.string.msg_ts_browser_failed); }
         return true;
     }
+
+    public void cancelPendingLogin() { awaitingLogin = false; }
 
     private void toast(int message) { Toast.makeText(activity, message, Toast.LENGTH_LONG).show(); }
 }

@@ -31,6 +31,7 @@ import java.net.Socket;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
@@ -105,15 +106,27 @@ public class DnsProxyServer {
     }
 
     interface LocalResolver { byte[] resolve(byte[] query); }
+    interface PlainDnsServers { List<InetSocketAddress> get(); }
     private final LocalResolver localResolver;
+    private final PlainDnsServers plainDnsServers;
 
     private DnsProxyServer(Context context) {
         this(context, net.kollnig.missioncontrol.tailscale.TailscaleManager::resolveDNS);
     }
 
     DnsProxyServer(Context context, LocalResolver localResolver) {
+        this(context, localResolver, null);
+    }
+
+    DnsProxyServer(Context context, LocalResolver localResolver, PlainDnsServers plainDnsServers) {
         this.context = context.getApplicationContext();
         this.localResolver = localResolver;
+        this.plainDnsServers = plainDnsServers != null ? plainDnsServers : () -> {
+            List<InetSocketAddress> servers = new ArrayList<>();
+            for (InetAddress address : eu.faircode.netguard.ServiceSinkhole.getDns(this.context))
+                servers.add(new InetSocketAddress(address, 53));
+            return servers;
+        };
     }
 
     public static synchronized DnsProxyServer getInstance(Context context) {
@@ -616,7 +629,7 @@ public class DnsProxyServer {
             if (prefs.getBoolean("ts_enabled", false))
                 responseData = localResolver.resolve(queryData);
             boolean plainDns = !prefs.getBoolean("doh_enabled", false);
-            if (responseData == null && plainDns) responseData = resolveViaStandardDns(queryData);
+            if (responseData == null && plainDns) responseData = resolveViaStandardDns(queryData, true);
             if (responseData != null) {
                 out.writeShort(responseData.length);
                 out.write(responseData);
@@ -655,7 +668,7 @@ public class DnsProxyServer {
 
                 boolean dnsFallback = prefs.getBoolean("doh_dns_fallback", false);
                 if (dnsFallback) {
-                    byte[] fallbackResponse = resolveViaStandardDns(queryData);
+                    byte[] fallbackResponse = resolveViaStandardDns(queryData, true);
                     if (fallbackResponse != null) {
                         Log.w(TAG, "DoH failed, used standard DNS fallback (TCP)");
                         out.writeShort(fallbackResponse.length);
@@ -683,22 +696,35 @@ public class DnsProxyServer {
      */
     @Nullable
     private byte[] resolveViaStandardDns(byte[] queryData) {
-        List<InetAddress> dnsServers = eu.faircode.netguard.ServiceSinkhole.getDns(context);
+        return resolveViaStandardDns(queryData, false);
+    }
+
+    @Nullable
+    private byte[] resolveViaStandardDns(byte[] queryData, boolean tcp) {
+        List<InetSocketAddress> dnsServers = plainDnsServers.get();
         if (dnsServers.isEmpty()) {
             Log.w(TAG, "No fallback DNS servers available");
             return null;
         }
 
-        for (InetAddress dnsServer : dnsServers) {
+        for (InetSocketAddress dnsServer : dnsServers) {
+            if (tcp) {
+                try {
+                    return queryPlainTcp(dnsServer, queryData);
+                } catch (IOException ex) {
+                    Log.w(TAG, "TCP DNS fallback failed: " + ex.getMessage());
+                    continue;
+                }
+            }
             try (DatagramSocket socket = new DatagramSocket()) {
                 // Connect the socket so the kernel drops any packet not from
                 // dnsServer:53 before it ever reaches us -- otherwise the
                 // socket is unconnected and any host reaching this ephemeral
                 // port qualifies.
-                socket.connect(dnsServer, 53);
+                socket.connect(dnsServer);
 
                 DatagramPacket request = new DatagramPacket(
-                        queryData, queryData.length, dnsServer, 53);
+                        queryData, queryData.length, dnsServer);
                 socket.send(request);
 
                 // Kernel-level connect() filters by sender address/port;
@@ -736,6 +762,40 @@ public class DnsProxyServer {
 
         Log.e(TAG, "All fallback DNS servers failed");
         return null;
+    }
+
+    private static byte[] queryPlainTcp(InetSocketAddress server, byte[] query) throws IOException {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(FALLBACK_DNS_TIMEOUT_MS);
+        try (Socket socket = new Socket()) {
+            socket.connect(server, FALLBACK_DNS_TIMEOUT_MS);
+            DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+            out.writeShort(query.length);
+            out.write(query);
+            out.flush();
+            byte[] prefix = new byte[2];
+            readTcpFrameBytes(socket, prefix, deadline);
+            int size = ((prefix[0] & 0xff) << 8) | (prefix[1] & 0xff);
+            if (size < 12) throw new IOException("Short TCP DNS response");
+            byte[] response = new byte[size];
+            readTcpFrameBytes(socket, response, deadline);
+            if (response[0] != query[0] || response[1] != query[1])
+                throw new IOException("Mismatched TCP DNS transaction");
+            if ((response[2] & 0x02) != 0)
+                throw new IOException("Truncated TCP DNS response");
+            return response;
+        }
+    }
+
+    private static void readTcpFrameBytes(Socket socket, byte[] data, long deadline) throws IOException {
+        int offset = 0;
+        while (offset < data.length) {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) throw new SocketTimeoutException("TCP DNS response deadline");
+            socket.setSoTimeout((int) Math.max(1, TimeUnit.NANOSECONDS.toMillis(remaining)));
+            int count = socket.getInputStream().read(data, offset, data.length - offset);
+            if (count < 0) throw new EOFException("Incomplete TCP DNS response");
+            offset += count;
+        }
     }
 
     private void sendTcpServFail(DataOutputStream out, byte[] queryData) throws IOException {

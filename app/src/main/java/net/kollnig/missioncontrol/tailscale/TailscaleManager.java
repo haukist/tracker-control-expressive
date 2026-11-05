@@ -2,8 +2,6 @@ package net.kollnig.missioncontrol.tailscale;
 
 import android.content.Context;
 import android.net.ConnectivityManager;
-import android.net.LinkProperties;
-import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
 import android.net.VpnService;
@@ -19,6 +17,9 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 import tailscalebridge.Client;
 import tailscalebridge.Tailscalebridge;
@@ -32,7 +33,8 @@ public final class TailscaleManager {
     private static volatile TailscaleSnapshot snapshot = TailscaleSnapshot.stopped();
     private static volatile String loginUrl = "";
     private static ConnectivityManager connectivity;
-    private static ConnectivityManager.NetworkCallback networkCallback;
+    private static TailscaleNetworkCallback networkCallback;
+    private static ExecutorService networkExecutor;
     private static FileOutputStream output;
     private static ParcelFileDescriptor inputDescriptor;
     private static Thread inputThread, replyThread, eventThread;
@@ -80,15 +82,12 @@ public final class TailscaleManager {
                 }, "Tailscale state");
                 eventThread.start();
                 connectivity = (ConnectivityManager) service.getSystemService(Context.CONNECTIVITY_SERVICE);
-                networkCallback = new ConnectivityManager.NetworkCallback() {
-                    private void changed() {
-                        try { created.networkChanged(platform.defaultInterface()); }
-                        catch (Exception ignored) { }
-                    }
-                    @Override public void onAvailable(Network network) { changed(); }
-                    @Override public void onLost(Network network) { changed(); }
-                    @Override public void onLinkPropertiesChanged(Network network, LinkProperties link) { changed(); }
-                };
+                networkExecutor = Executors.newSingleThreadExecutor(task -> new Thread(task, "Tailscale network"));
+                networkCallback = new TailscaleNetworkCallback(networkExecutor, () -> {
+                    if (client != created) return;
+                    try { created.networkChanged(platform.defaultInterface()); }
+                    catch (Exception ignored) { }
+                });
                 connectivity.registerNetworkCallback(new NetworkRequest.Builder()
                         .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN).build(), networkCallback);
             } catch (Exception | LinkageError ex) {
@@ -179,11 +178,16 @@ public final class TailscaleManager {
         synchronized (LIFE) {
             Client previous = client;
             client = null;
+            if (networkCallback != null) networkCallback.close();
             if (connectivity != null && networkCallback != null)
                 try { connectivity.unregisterNetworkCallback(networkCallback); } catch (RuntimeException ignored) { }
             connectivity = null;
             networkCallback = null;
+            ExecutorService previousNetworkExecutor = networkExecutor;
+            networkExecutor = null;
+            if (previousNetworkExecutor != null) previousNetworkExecutor.shutdownNow();
             if (previous != null) try { previous.close(); } catch (Exception ignored) { }
+            awaitNetworkStop(previousNetworkExecutor);
             join(replyThread);
             join(eventThread);
             replyThread = null;
@@ -198,6 +202,16 @@ public final class TailscaleManager {
         boolean interrupted = false;
         while (thread.isAlive()) {
             try { thread.join(); }
+            catch (InterruptedException ex) { interrupted = true; }
+        }
+        if (interrupted) Thread.currentThread().interrupt();
+    }
+
+    private static void awaitNetworkStop(ExecutorService executor) {
+        if (executor == null) return;
+        boolean interrupted = false;
+        while (!executor.isTerminated()) {
+            try { executor.awaitTermination(1, TimeUnit.DAYS); }
             catch (InterruptedException ex) { interrupted = true; }
         }
         if (interrupted) Thread.currentThread().interrupt();
