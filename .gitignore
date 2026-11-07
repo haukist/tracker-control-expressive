@@ -122,3 +122,6 @@ wgbridge-rs/target/
 
 # Worktree-local tools, sources and device backups
 /.local/
+
+# Codex remote attachments
+/.codex-remote-attachments/
