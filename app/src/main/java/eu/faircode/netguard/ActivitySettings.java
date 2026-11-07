@@ -893,7 +893,8 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
         } else if ("ts_enabled".equals(name)) {
             if (tailscaleSettings != null) tailscaleSettings.update();
             refreshResearchModeSummary();
-            ServiceSinkhole.reload("changed " + name, this, false);
+            if (!net.kollnig.missioncontrol.diagnostics.BatteryExperimentHooks.isChangingTailscale())
+                ServiceSinkhole.reload("changed " + name, this, false);
 
         } else if ("wg_enabled".equals(name)) {
             updateWireGuardStatus();

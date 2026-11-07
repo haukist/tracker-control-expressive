@@ -53,6 +53,7 @@ android {
         versionCode 2026110101
         versionName "2026.11.01"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField "boolean", "BATTERY_EXPERIMENT_ENABLED", "false"
 
         // Secure DNS (DoH) configuration
         buildConfigField "String", "DEFAULT_DOH_ENDPOINT", "\"https://dns.quad9.net/dns-query\""
@@ -112,12 +113,37 @@ android {
             shrinkResources = true
             proguardFiles.add(file('proguard-rules.pro'))
         }
+        benchmark {
+            initWith release
+            matchingFallbacks = ['release']
+            debuggable = false
+            signingConfig = signingConfigs.debug
+            applicationIdSuffix ".test"
+            versionNameSuffix "-benchmark"
+            buildConfigField "boolean", "BATTERY_EXPERIMENT_ENABLED", "true"
+            proguardFiles.add(file('src/benchmark/proguard-rules.pro'))
+        }
         debug {
             // Install debug builds alongside release builds on the same device
             applicationIdSuffix ".test"
             versionNameSuffix "-test"
+            buildConfigField "boolean", "BATTERY_EXPERIMENT_ENABLED", "true"
             //minifyEnabled = true
             //proguardFiles.add(file('proguard-rules.pro'))
+        }
+    }
+
+    sourceSets {
+        debug {
+            java.srcDir 'src/batteryExperiment/java'
+            res.srcDir 'src/batteryExperiment/res'
+        }
+        benchmark {
+            java.srcDir 'src/batteryExperiment/java'
+            res.srcDir 'src/batteryExperiment/res'
+        }
+        testBenchmark {
+            java.srcDir 'src/testDebug/java'
         }
     }
 
@@ -198,6 +224,9 @@ android {
 }
 
 androidComponents {
+    beforeVariants(selector().withBuildType('benchmark')) { variantBuilder ->
+        variantBuilder.enableUnitTest = true
+    }
     onVariants(selector().all()) { variant ->
         variant.outputs.forEach { output ->
             output.outputFileName.set("TrackerControl-${variant.name}-latest.apk")

@@ -28,6 +28,7 @@ public final class TailscaleSettings {
 
     public void configure(PreferenceScreen screen) {
         this.screen = screen;
+        net.kollnig.missioncontrol.diagnostics.BatteryExperimentHooks.configurePreference(activity, screen);
         for (String key : new String[]{"ts_enabled", "wg_enabled", "socks5_enabled"}) {
             Preference pref = screen.findPreference(key);
             if (pref == null) continue;

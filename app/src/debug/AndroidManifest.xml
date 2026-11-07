@@ -2,7 +2,17 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+
     <application>
+        <activity
+            android:name="net.kollnig.missioncontrol.diagnostics.BatteryExperimentActivity"
+            android:exported="false"
+            android:label="@string/battery_experiment_title"
+            android:theme="@style/AppTheme" />
+        <receiver
+            android:name="net.kollnig.missioncontrol.diagnostics.BatteryExperimentAlarmReceiver"
+            android:exported="false" />
         <!-- androidx.compose.ui:ui-test-manifest contributes this host activity
              for createComposeRule(), themed with the framework's
              @android:style/Theme.Material.Light.NoActionBar. That theme carries

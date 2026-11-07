@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <application>
+        <profileable android:shell="true" tools:targetApi="29" />
+        <activity
+            android:name="net.kollnig.missioncontrol.diagnostics.BatteryExperimentActivity"
+            android:exported="false"
+            android:label="@string/battery_experiment_title"
+            android:theme="@style/AppTheme" />
+        <receiver
+            android:name="net.kollnig.missioncontrol.diagnostics.BatteryExperimentAlarmReceiver"
+            android:exported="false" />
+    </application>
+</manifest>

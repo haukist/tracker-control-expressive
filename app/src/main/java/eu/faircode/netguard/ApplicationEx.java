@@ -156,6 +156,8 @@ public class ApplicationEx extends Application {
         // Keep VPN exclusions aligned with the selected blocking mode on startup.
         BlockingMode.syncAutoExclusions(this);
 
+        net.kollnig.missioncontrol.diagnostics.BatteryExperimentHooks.initialize(this);
+
         registerActivityLifecycleCallbacks(new ActivityLifecycleCallbacks() {
             @Override
             public void onActivityCreated(@NonNull Activity activity, @Nullable Bundle savedInstanceState) {

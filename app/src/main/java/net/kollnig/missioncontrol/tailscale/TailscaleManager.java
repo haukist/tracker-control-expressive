@@ -32,6 +32,7 @@ public final class TailscaleManager {
     private static volatile Client client;
     private static volatile TailscaleSnapshot snapshot = TailscaleSnapshot.stopped();
     private static volatile String loginUrl = "";
+    private static volatile boolean bridgeAttached;
     private static ConnectivityManager connectivity;
     private static TailscaleNetworkCallback networkCallback;
     private static ExecutorService networkExecutor;
@@ -42,12 +43,17 @@ public final class TailscaleManager {
     private TailscaleManager() {}
 
     public static TailscaleSnapshot snapshot() { return snapshot; }
+    public static boolean isBridgeAttached() { return bridgeAttached; }
     public static String loginUrl() { return loginUrl; }
     public static void addListener(Runnable listener) { listeners.add(listener); }
     public static void removeListener(Runnable listener) { listeners.remove(listener); }
 
     private static void publish(TailscaleSnapshot next) {
         snapshot = next;
+        notifyListeners();
+    }
+
+    private static void notifyListeners() {
         Handler main = new Handler(Looper.getMainLooper());
         for (Runnable listener : listeners) main.post(listener);
     }
@@ -142,8 +148,15 @@ public final class TailscaleManager {
                     }
                 }
             } catch (IOException ignored) { }
+            finally {
+                // detach() joins this reader before a replacement can attach.
+                bridgeAttached = false;
+                notifyListeners();
+            }
         }, "Tailscale approved packets");
+        bridgeAttached = true;
         inputThread.start();
+        notifyListeners();
     }
 
     private static void receiveReplies(Client source) {
@@ -164,6 +177,8 @@ public final class TailscaleManager {
 
     /** C must shutdown its socketpair writer before detaching, which wakes input.read. */
     public static void detach() {
+        bridgeAttached = false;
+        notifyListeners();
         synchronized (OUTPUT) {
             if (output != null) try { output.close(); } catch (IOException ignored) { }
             output = null;

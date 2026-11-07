@@ -32,6 +32,38 @@ updating an existing GitHub debug install on a real device, back up its
 configuration, especially WireGuard profiles and the Mullvad login — see
 `agents/docs/device-testing.md`.
 
+## Performance profiling build
+
+The **benchmark** build type inherits release code shrinking, obfuscation, and
+resource shrinking, remains non-debuggable, and enables shell profiling through
+its own manifest on Android 10 (API 29) and newer. It uses the local debug signing
+key and the same `.test` application ID suffix as debug. It replaces the debug
+install while retaining its configuration when signed with the same local key;
+debug and benchmark cannot coexist. It can coexist with the release install.
+Do not switch builds during an active battery experiment.
+
+Build with `./gradlew :app:assembleGithubBenchmark -q`, or select
+`githubBenchmark` in Android Studio's Build Variants panel. The APK is written to
+`app/build/outputs/apk/github/benchmark/TrackerControl-githubBenchmark-latest.apk`.
+Use Android Studio Profiler's low-overhead profiling mode for CPU sampling and
+system traces. Shrunk-code mappings are in
+`app/build/outputs/mapping/githubBenchmark/mapping.txt`.
+
+Both debug and benchmark include the overnight battery experiment screen from
+the shared `src/batteryExperiment` Java/resource directories, enabled through
+`BuildConfig.BATTERY_EXPERIMENT_ENABLED`. Benchmark keeps the reflected
+controller entry points through variant-specific R8 rules. Release does not
+include the experiment UI, alarm receiver, or alarm permission.
+See `docs/BATTERY_MEASUREMENT.md` for the measurement procedure and exporting
+results through the screen; benchmark is non-debuggable, so `adb run-as` is
+unavailable. The shared experiment tests run with either
+`:app:testGithubDebugUnitTest` or `:app:testGithubBenchmarkUnitTest`.
+
+This build is intended for local
+profiling, not distribution. Like other variants, enabling its VPN revokes the
+VPN consent of the app currently holding it; coexistence does not allow two
+active VPNs.
+
 ## Commands
 
 ```bash

@@ -2160,6 +2160,7 @@ public class ServiceSinkhole extends VpnService {
     }
 
     private boolean startNative(final ParcelFileDescriptor vpn, List<Rule> listAllowed, List<Rule> listRule) {
+        net.kollnig.missioncontrol.diagnostics.BatteryExperimentHooks.vpnState(false);
         validateEgressPreferences();
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ServiceSinkhole.this);
         boolean tailscaleEnabled = prefs.getBoolean("ts_enabled", false);
@@ -2299,6 +2300,7 @@ public class ServiceSinkhole extends VpnService {
                     jni_run(jni_context, vpn.getFd(), fwd53, rcode);
                     Log.i(TAG, "Tunnel exited");
                     tunnelThread = null;
+                    net.kollnig.missioncontrol.diagnostics.BatteryExperimentHooks.vpnState(false);
                 }
             });
             // tunnelThread.setPriority(Thread.MAX_PRIORITY);
@@ -2308,10 +2310,13 @@ public class ServiceSinkhole extends VpnService {
         }
 
         cancelNativeRecovery(false);
+        Thread activeTunnel = tunnelThread;
+        net.kollnig.missioncontrol.diagnostics.BatteryExperimentHooks.vpnState(activeTunnel != null && activeTunnel.isAlive());
         return true;
     }
 
     private void stopNative(ParcelFileDescriptor vpn) {
+        net.kollnig.missioncontrol.diagnostics.BatteryExperimentHooks.vpnState(false);
         Log.i(TAG, "Stop native");
         jni_tailscale_stop();
         net.kollnig.missioncontrol.tailscale.TailscaleManager.detach();
@@ -4096,6 +4101,7 @@ public class ServiceSinkhole extends VpnService {
     private final AtomicBoolean pendingWireGuardRestart = new AtomicBoolean(false);
 
     private void reloadAfterNetworkChange(final String reason) {
+        net.kollnig.missioncontrol.diagnostics.BatteryExperimentHooks.networkChanged();
         // Callbacks arrive off the main thread; the reload runs on it.
         cancelVpnReplacementRecovery(false);
         if (NetworkReloadPolicy.shouldRestartWireGuard(reason))
@@ -4313,6 +4319,7 @@ public class ServiceSinkhole extends VpnService {
 
     @Override
     public void onDestroy() {
+        net.kollnig.missioncontrol.diagnostics.BatteryExperimentHooks.vpnState(false);
         synchronized (this) {
             destroying = true;
             Log.i(TAG, "Destroy");
