@@ -92,6 +92,9 @@ func TestBackendLifecycle(t *testing.T) {
 	if err := client.SendPacket(nil); err != io.ErrClosedPipe {
 		t.Fatalf("SendPacket after close: %v", err)
 	}
+	if err := client.SendPacketPrefix(nil, 1); err != io.ErrClosedPipe {
+		t.Fatalf("SendPacketPrefix after close: %v", err)
+	}
 	if err := client.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
 	}

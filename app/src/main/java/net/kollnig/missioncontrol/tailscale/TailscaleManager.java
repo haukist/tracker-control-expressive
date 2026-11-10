@@ -31,6 +31,7 @@ public final class TailscaleManager {
     private static final Object PENDING_STOPS = new Object();
     private static final String TAG = "TrackerControl.Tailscale";
     private static int pendingStops;
+    private static final int PACKET_BUFFER = 2048;
     /** How long start() waits for an engine that is still shutting down. Changed only by tests. */
     static long stopWaitMillis = 30_000;
     private static final Set<Runnable> listeners = new CopyOnWriteArraySet<>();
@@ -150,7 +151,12 @@ public final class TailscaleManager {
         Client target = client;
         inputThread = new Thread(() -> {
             try (ParcelFileDescriptor.AutoCloseInputStream input = new ParcelFileDescriptor.AutoCloseInputStream(packets)) {
-                byte[] buffer = new byte[65535];
+                // Native code only hands over packets of at most the overlay
+                // MTU (1280). A buffer of that order keeps the cost at the
+                // Java/Go boundary small even where the runtime copies the
+                // array for the call instead of pinning it; a longer packet
+                // would arrive truncated and be rejected by Go as malformed.
+                byte[] buffer = new byte[PACKET_BUFFER];
                 int length;
                 while ((length = input.read(buffer)) > 0) {
                     if (target != null && target == client) {

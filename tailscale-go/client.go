@@ -286,6 +286,13 @@ func (c *Client) SendPacket(packet []byte) error {
 // per packet. The buffer is not retained after the call returns.
 func (c *Client) SendPacketPrefix(buffer []byte, length int) error {
 	if length < 0 || length > len(buffer) {
+		// As SendPacket: a closed client reports that before anything else.
+		c.mu.RLock()
+		closed := c.closed
+		c.mu.RUnlock()
+		if closed {
+			return io.ErrClosedPipe
+		}
 		return errors.New("invalid packet length")
 	}
 	return c.SendPacket(buffer[:length])
