@@ -104,6 +104,10 @@ int main(void) {
     fill_ipv6(packet, 200);
     memset(packet + 8, 0, 16);
     assert(tailscale_ipv6_unreachable(packet, 200, 0, out, sizeof(out)) == 0);
+    fill_ipv6(packet, 200);
+    memset(packet + 24, 0, 16); // to ::, which would become the answer's source
+    assert(tailscale_ipv6_unreachable(packet, 200, 0, out, sizeof(out)) == 0);
+    assert(!tailscale_ipv6_answerable(packet, 200));
     fill_ipv4(packet, 200);
     assert(tailscale_ipv6_unreachable(packet, 200, 0, out, sizeof(out)) == 0);
     assert(!tailscale_ipv6_answerable(packet, 200));

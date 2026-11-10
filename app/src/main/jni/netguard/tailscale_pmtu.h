@@ -124,12 +124,14 @@ static inline size_t tailscale_icmp6_error(const uint8_t *packet, size_t length,
 
 // Whether an IPv6 packet may be answered at all, by an ICMPv6 error or a TCP
 // reset. RFC 4443 2.4(e): not a packet to a multicast address, nor one from
-// the unspecified or a multicast address. The answer's source would be the
-// multicast address, or its destination no host at all.
+// the unspecified or a multicast address. The answer is sent from the
+// packet's destination to its source, so neither may be the unspecified
+// address either: it would be the answer's source, or name no host at all.
 static inline int tailscale_ipv6_answerable(const uint8_t *packet, size_t length) {
     static const uint8_t unspecified[16];
     return length >= 40 && (packet[0] >> 4) == 6 && packet[24] != 0xff &&
-           packet[8] != 0xff && memcmp(packet + 8, unspecified, 16) != 0;
+           packet[8] != 0xff && memcmp(packet + 8, unspecified, 16) != 0 &&
+           memcmp(packet + 24, unspecified, 16) != 0;
 }
 
 // Builds "no route to destination" for an IPv6 packet that is dropped because
