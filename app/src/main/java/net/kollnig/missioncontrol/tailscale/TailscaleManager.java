@@ -8,6 +8,7 @@ import android.net.VpnService;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.ParcelFileDescriptor;
+import android.util.Log;
 
 import org.json.JSONObject;
 
@@ -27,6 +28,9 @@ import tailscalebridge.Tailscalebridge;
 public final class TailscaleManager {
     private static final Object LIFE = new Object();
     private static final Object OUTPUT = new Object();
+    private static final Object PENDING_STOPS = new Object();
+    private static final String TAG = "TrackerControl.Tailscale";
+    private static int pendingStops;
     private static final Set<Runnable> listeners = new CopyOnWriteArraySet<>();
     private static volatile Client client;
     private static volatile TailscaleSnapshot snapshot = TailscaleSnapshot.stopped();
@@ -64,6 +68,7 @@ public final class TailscaleManager {
 
     /** Called on the VPN command thread. Engine survives native-only/TUN reloads. */
     public static void start(VpnService service, Runnable reconfigure) {
+        awaitPendingStops();
         synchronized (LIFE) {
             if (client != null) return;
             try {
@@ -210,6 +215,39 @@ public final class TailscaleManager {
             loginUrl = "";
             publish(TailscaleSnapshot.stopped());
         }
+    }
+
+    /**
+     * stop() for the main thread. Shutting the engine down waits on Go and on
+     * its threads without a time limit, which must never block the UI thread
+     * (Service.onDestroy). The request is counted before this returns, and
+     * start() waits for it: a later start can never be undone by this stop.
+     */
+    public static void stopAsync() {
+        synchronized (PENDING_STOPS) { pendingStops++; }
+        new Thread(() -> {
+            try {
+                stop();
+            } catch (RuntimeException ex) {
+                Log.e(TAG, "Tailscale stop failed", ex);
+            } finally {
+                synchronized (PENDING_STOPS) {
+                    pendingStops--;
+                    PENDING_STOPS.notifyAll();
+                }
+            }
+        }, "Tailscale stop").start();
+    }
+
+    private static void awaitPendingStops() {
+        boolean interrupted = false;
+        synchronized (PENDING_STOPS) {
+            while (pendingStops > 0) {
+                try { PENDING_STOPS.wait(); }
+                catch (InterruptedException ex) { interrupted = true; }
+            }
+        }
+        if (interrupted) Thread.currentThread().interrupt();
     }
 
     private static void join(Thread thread) {
