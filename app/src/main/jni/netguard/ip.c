@@ -625,6 +625,10 @@ void handle_ip(const struct arguments *args,
             ((protocol == IPPROTO_UDP && udp_session_exists) ||
              (protocol == IPPROTO_TCP && has_tcp_session(args, version, pkt, payload)));
     int tailscale_tcp_policy = tailscale_dest && protocol == IPPROTO_TCP && !tailscale_dns_session;
+    // Overlay UDP is handed to the bridge without an ng_session, so nothing
+    // else remembers its allow verdict. DNS keeps its redirect lookup.
+    int tailscale_udp_policy = tailscale_dest && protocol == IPPROTO_UDP &&
+            !udp_session_exists && dport != 53;
 
     jint uid = -1;
 
@@ -759,6 +763,19 @@ void handle_ip(const struct arguments *args,
                 cached_udp_uid_known, wants_tunnel);
     }
 
+    // An allowed overlay datagram is only cached once its owner was resolved,
+    // and a policy reload invalidates the cache. Without this every datagram
+    // of a flow repeats the Android owner lookup and the Java policy upcall.
+    // A blocked flow is remembered by block_udp()'s negative session instead.
+    int reuse_tailscale_udp_verdict = 0;
+    if (tailscale_udp_policy) {
+        int verdict;
+        reuse_tailscale_udp_verdict =
+                route_flow_lookup_verdict(version, protocol, saddr, sport, daddr, dport,
+                                          &verdict) &&
+                verdict == ROUTE_FLOW_VERDICT_ALLOWED;
+    }
+
     // Get uid. SNI research mode deliberately lets a 443 SYN through without
     // one so the ClientHello can be reassembled first. That is fine for the
     // block decision, but the routing fork needs the UID now: with no UID and
@@ -771,7 +788,7 @@ void handle_ip(const struct arguments *args,
     int sni_candidate = (is_play && protocol == IPPROTO_TCP && dport == 443 && !tailscale_dest);
     if (protocol == IPPROTO_ICMP || protocol == IPPROTO_ICMPV6 ||
         (protocol == IPPROTO_UDP && !reuse_wg_udp_verdict &&
-         !udp_session_exists) ||
+         !reuse_tailscale_udp_verdict && !udp_session_exists) ||
         (protocol == IPPROTO_TCP && syn &&
          (!sni_candidate || route_uid_relevant()))) {
             if (args->ctx->sdk <= 28) // Android 9 Pie
@@ -842,7 +859,7 @@ void handle_ip(const struct arguments *args,
     // Check if allowed
     int allowed = 0;
     struct allowed *redirect = NULL;
-    if (reuse_wg_udp_verdict)
+    if (reuse_wg_udp_verdict || reuse_tailscale_udp_verdict)
         allowed = 1;
     else if (protocol == IPPROTO_UDP && udp_session_exists)
         allowed = 1; // could be a lingering/blocked session
@@ -990,7 +1007,8 @@ void handle_ip(const struct arguments *args,
         // blocklist recording path. Other overlay traffic is always claimed,
         // including while the Go engine is unready or the bridge is detached.
         if (tailscale_dest && !tailscale_dns_session && !(dport == 53 && redirect != NULL)) {
-            if (tailscale_tcp_policy && uid >= 0)
+            if ((tailscale_tcp_policy ||
+                 (tailscale_udp_policy && !reuse_tailscale_udp_verdict)) && uid >= 0)
                 route_flow_store_verdict(version, protocol, saddr, sport, daddr, dport,
                                          ROUTE_FLOW_VERDICT_ALLOWED);
             write_tailscale_packet(pkt, length);

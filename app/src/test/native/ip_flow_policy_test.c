@@ -685,6 +685,56 @@ static void test_tailscale_tcp_revalidation(void) {
     atomic_store(&wg_required, 1);
 }
 
+static void test_tailscale_udp_verdict_cache(void) {
+    _Alignas(struct iphdr) uint8_t packet[256];
+    const uint8_t opaque[] = {0x17, 0x03, 0x03, 0x00, 0x01, 0x7f};
+    reset_fakes();
+    atomic_store(&wg_required, 0);
+    tailscale_enabled = 1;
+    size_t length = make_udp(packet, 43010, opaque, sizeof(opaque));
+    set_destination(packet, "100.64.1.2");
+    run(packet, length);
+    run(packet, length);
+    run(packet, length);
+    CHECK(policy_calls == 1 && uid_calls == 1 && tailscale_writes == 3,
+          "allowed Tailnet UDP resolves its owner and policy once per flow");
+
+    route_flow_invalidate();
+    policy_allowed = 0;
+    run(packet, length);
+    CHECK(policy_calls == 2 && tailscale_writes == 3 && blocked_udp_calls == 1,
+          "a policy reload rechecks Tailnet UDP and blocks before the bridge");
+    run(packet, length);
+    CHECK(policy_calls == 2 && tailscale_writes == 3 && blocked_udp_calls == 1,
+          "blocked Tailnet UDP uses negative state without Java or the bridge");
+
+    // An unresolved owner must stay uncached so ownership is retried.
+    reset_fakes();
+    atomic_store(&wg_required, 0);
+    tailscale_enabled = 1;
+    configured_uid = -1;
+    length = make_udp(packet, 43011, opaque, sizeof(opaque));
+    set_destination(packet, "100.64.1.2");
+    run(packet, length);
+    run(packet, length);
+    CHECK(policy_calls == 2 && uid_calls == 2 && tailscale_writes == 2,
+          "Tailnet UDP with an unknown owner is never pinned as allowed");
+
+    // The cached verdict belongs to one five-tuple only.
+    configured_uid = 10042;
+    run(packet, length);
+    run(packet, length);
+    CHECK(policy_calls == 3 && uid_calls == 3 && tailscale_writes == 4,
+          "Tailnet UDP is cached once its owner resolves");
+    length = make_udp(packet, 43012, opaque, sizeof(opaque));
+    set_destination(packet, "100.64.1.2");
+    policy_allowed = 0;
+    run(packet, length);
+    CHECK(policy_calls == 4 && tailscale_writes == 4 && blocked_udp_calls == 1,
+          "a different Tailnet UDP tuple does not inherit an allowed verdict");
+    atomic_store(&wg_required, 1);
+}
+
 static void test_tailscale_dns_policy_and_native_sessions(void) {
     _Alignas(struct iphdr) uint8_t packet[256];
     reset_fakes();
@@ -767,6 +817,7 @@ int main(void) {
     test_selected_route_fast_path();
     test_split_tunnel_routes_outside_allowed_ips_direct();
     test_tailscale_tcp_revalidation();
+    test_tailscale_udp_verdict_cache();
     test_tailscale_dns_policy_and_native_sessions();
     test_tailscale_ipv6_preserves_ipv6_disabled_setting();
     if (failures != 0)
