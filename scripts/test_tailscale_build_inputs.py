@@ -101,5 +101,26 @@ print(json.dumps({'GOROOT': str(root), 'GOTOOLDIR': str(root/'pkg/tool'), 'GOVER
         self.assertEqual(self.run_build(relative), 2)
 
 
+class BuildTagTest(unittest.TestCase):
+    """The shipped AAR and the Go tests must compile the same feature set."""
+
+    def test_printed_tags_are_the_ones_passed_to_gomobile(self):
+        script = REPO / "scripts/build_tailscale_poc.py"
+        printed = subprocess.run([sys.executable, str(script), "--print-tags"], check=True,
+                                 capture_output=True, text=True).stdout.strip()
+        tags = printed.split(",")
+        # New() refuses to start an engine built with the peer API server.
+        self.assertIn("ts_omit_peerapiserver", tags)
+        # No uploader of logs or network flow logs may be compiled in.
+        self.assertIn("ts_omit_logtail", tags)
+        self.assertIn("ts_omit_netlog", tags)
+        self.assertEqual(len(tags), len(set(tags)))
+        for tag in tags:
+            self.assertRegex(tag, r"^ts_omit_[a-z0-9_]+$")
+        source = script.read_text(encoding="utf-8")
+        self.assertEqual(source.count('f"-tags={BUILD_TAGS}"'), 1)
+        self.assertNotIn('"-tags=ts_omit', source)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

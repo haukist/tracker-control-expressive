@@ -14,14 +14,20 @@ Use Go 1.27.3 or newer. Dependency versions and checksums are committed in
 
 ```sh
 cd tailscale-go
-go test -tags=ts_omit_peerapiserver ./...
-go test -race -tags=ts_omit_peerapiserver ./...
-go vet -tags=ts_omit_peerapiserver ./...
+TAGS="$(python ../scripts/build_tailscale_poc.py --print-tags)" &&
+go test -tags="$TAGS" ./... &&
+go test -race -tags="$TAGS" ./... &&
+go vet -tags="$TAGS" ./...
 ```
 
-The build tag disables Tailscale's peer API server (including inbound services
-outside this feature's scope). `New` fails without it rather than accidentally
-starting the peer API after login. Shields Up is also enabled; subnet routes,
+The tags compile out upstream features this app never uses; the list lives in
+`scripts/build_tailscale_poc.py` so tests and the shipped AAR use the same one.
+`ts_omit_peerapiserver` is mandatory: it disables Tailscale's peer API server
+(including inbound services outside this feature's scope), and `New` fails
+without it rather than accidentally starting the peer API after login. The
+others remove Tailscale SSH, Taildrop, Serve/Funnel, the web client, exit-node
+and subnet-router roles, client self-update and the log and network-flow-log
+uploaders, among others. Shields Up is also enabled; subnet routes,
 exit nodes and OS DNS configuration are not enabled.
 
 Tests cover packet framing/address boundaries, bounded queues, packet ownership,
@@ -32,7 +38,8 @@ Tailnet connectivity or Android VPN compatibility.
 ## Manual host harness
 
 ```sh
-go run -tags=ts_omit_peerapiserver ./cmd/tailscale-poc -state-dir /absolute/private/path
+TAGS="$(python ../scripts/build_tailscale_poc.py --print-tags)" &&
+go run -tags="$TAGS" ./cmd/tailscale-poc -state-dir /absolute/private/path
 ```
 
 Commands are `status`, `login`, `send <IP-packet-hex>`, `read`, `network-changed`,

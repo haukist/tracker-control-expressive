@@ -15,6 +15,19 @@ import zipfile
 
 MOBILE_VERSION = "v0.0.0-20261011034528-197770444867"
 NDK_VERSION = "29.0.14206865"
+# Upstream features this app never uses are compiled out, not just left
+# disabled: inbound services, remote access and administration, routing roles
+# outside the feature's scope, and every log/telemetry uploader. The first tag
+# is mandatory (New refuses to start without it); the rest shrink the binary
+# and what a compromised or misbehaving control plane could ask it to do.
+OMITTED_FEATURES = (
+    "peerapiserver", "ssh", "taildrop", "serve", "webclient", "drive", "capture",
+    "relayserver", "advertiseroutes", "advertiseexitnode", "useexitnode",
+    "appconnectors", "wakeonlan", "clientupdate", "kube", "aws", "bird", "tap",
+    "tpm", "acme", "outboundproxy", "systray", "completion", "desktop_sessions",
+    "flashappliance", "synology", "debugportmapper", "logtail", "netlog", "posture",
+)
+BUILD_TAGS = ",".join(f"ts_omit_{feature}" for feature in OMITTED_FEATURES)
 ABIS = {"armeabi-v7a", "arm64-v8a", "x86", "x86_64"}
 ANDROID_NS = "{http://schemas.android.com/apk/res/android}"
 
@@ -108,11 +121,15 @@ def main() -> int:
     parser.add_argument("--go", help="Go executable")
     parser.add_argument("--gomobile", help="Pinned gomobile executable")
     parser.add_argument("--gobind", help="Pinned gobind executable")
+    parser.add_argument("--print-tags", action="store_true", help="Print the Go build tags and exit")
     parser.add_argument("--print-build-inputs", action="store_true", help="Print toolchain inputs as JSON without building")
     parser.add_argument("--python-launcher", help="Python launcher used by Gradle (input tracking)")
     parser.add_argument("--android-sdk", help="Android SDK directory; otherwise use ANDROID_HOME")
     parser.add_argument("--android-ndk", help=f"NDK {NDK_VERSION} directory; otherwise use ANDROID_NDK_HOME or SDK/ndk")
     args = parser.parse_args()
+    if args.print_tags:
+        print(BUILD_TAGS)
+        return 0
     root = Path(__file__).resolve().parents[1]
     go = find_tool("go", args.go)
     mobile = find_tool("gomobile", args.gomobile)
@@ -148,7 +165,7 @@ def main() -> int:
     output = root / "tailscale-go" / "build" / "tailscale.aar"
     output.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        [mobile, "bind", "-target=android", "-androidapi=23", "-tags=ts_omit_peerapiserver",
+        [mobile, "bind", "-target=android", "-androidapi=23", f"-tags={BUILD_TAGS}",
          "-trimpath", "-ldflags=-buildid= -s -w -extldflags=-Wl,-z,max-page-size=16384",
          "-o", str(output), "."],
         cwd=root / "tailscale-go", env=env, check=True,
