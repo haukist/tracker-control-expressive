@@ -106,6 +106,9 @@ int main(void) {
     assert(tailscale_ipv6_unreachable(packet, 200, 0, out, sizeof(out)) == 0);
     fill_ipv4(packet, 200);
     assert(tailscale_ipv6_unreachable(packet, 200, 0, out, sizeof(out)) == 0);
+    assert(!tailscale_ipv6_answerable(packet, 200));
+    fill_ipv6(packet, 200);
+    assert(tailscale_ipv6_answerable(packet, 200) && !tailscale_ipv6_answerable(packet, 39));
 
     struct tailscale_too_big_limit limit = {0};
     int permitted = 0;

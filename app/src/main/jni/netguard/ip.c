@@ -212,22 +212,28 @@ static int is_icmp_error(int protocol, const uint8_t *pkt, const uint8_t *payloa
     return protocol == IPPROTO_ICMPV6 && type < 128;
 }
 
-// Writes a locally generated ICMP error to the app. Limited per destination
-// (hashed, so a collision shares a limit): one noisy flow should not starve
-// the answer another destination is waiting for. Packets that get no
+// Whether one more locally generated answer (an ICMP error or a TCP reset)
+// about pkt may be written. Limited per destination (hashed, so a collision
+// shares a limit): one noisy flow should not starve the answer another
+// destination is waiting for, nor turn every packet into a TUN write.
+// pkt must hold a complete fixed IPv4 or IPv6 header matching version.
+static int tailscale_answer_permitted(struct tailscale_too_big_limit *limits,
+                                      int version, const uint8_t *pkt) {
+    const uint8_t *daddr = version == 4 ? pkt + 16 : pkt + 24;
+    struct timespec now;
+    return clock_gettime(CLOCK_MONOTONIC, &now) == 0 &&
+           tailscale_too_big_permitted(
+                   &limits[tailscale_too_big_slot(daddr, version == 4 ? 4 : 16)],
+                   (uint64_t) now.tv_sec * 1000u + (uint64_t) now.tv_nsec / 1000000u);
+}
+
+// Writes a locally generated ICMP error to the app. Packets that get no
 // error at all (answer_length 0) do not spend from the limit.
 static void write_tailscale_icmp_error(const struct arguments *args,
                                        struct tailscale_too_big_limit *limits,
                                        int version, const uint8_t *pkt,
                                        const uint8_t *answer, size_t answer_length) {
-    if (answer_length == 0)
-        return;
-    const uint8_t *daddr = version == 4 ? pkt + 16 : pkt + 24;
-    struct timespec now;
-    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0 ||
-        !tailscale_too_big_permitted(
-                &limits[tailscale_too_big_slot(daddr, version == 4 ? 4 : 16)],
-                (uint64_t) now.tv_sec * 1000u + (uint64_t) now.tv_nsec / 1000000u))
+    if (answer_length == 0 || !tailscale_answer_permitted(limits, version, pkt))
         return;
 
     if (write_tun_packet(args->tun, args->ctx ? args->ctx->pipefds[0] : -1,
@@ -259,8 +265,13 @@ static void reject_disabled_ipv6_packet(const struct arguments *args, int protoc
                                         const uint8_t *pkt, const uint8_t *payload,
                                         size_t length) {
     if (protocol == IPPROTO_TCP) {
+        // Resets follow the same rules as the ICMPv6 errors below, with a
+        // budget of their own so neither kind of answer starves the other.
+        static struct tailscale_too_big_limit reset_limits[TAILSCALE_TOO_BIG_SLOTS];
         if (payload >= pkt && (size_t) (payload - pkt) + sizeof(struct tcphdr) <= length &&
-            !((const struct tcphdr *) payload)->rst)
+            !((const struct tcphdr *) payload)->rst &&
+            tailscale_ipv6_answerable(pkt, length) &&
+            tailscale_answer_permitted(reset_limits, 6, pkt))
             write_stateless_tcp_reset(args, 6, pkt, payload, length);
         return;
     }

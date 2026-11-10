@@ -122,16 +122,23 @@ static inline size_t tailscale_icmp6_error(const uint8_t *packet, size_t length,
     return total;
 }
 
+// Whether an IPv6 packet may be answered at all, by an ICMPv6 error or a TCP
+// reset. RFC 4443 2.4(e): not a packet to a multicast address, nor one from
+// the unspecified or a multicast address. The answer's source would be the
+// multicast address, or its destination no host at all.
+static inline int tailscale_ipv6_answerable(const uint8_t *packet, size_t length) {
+    static const uint8_t unspecified[16];
+    return length >= 40 && (packet[0] >> 4) == 6 && packet[24] != 0xff &&
+           packet[8] != 0xff && memcmp(packet + 8, unspecified, 16) != 0;
+}
+
 // Builds "no route to destination" for an IPv6 packet that is dropped because
 // ordinary IPv6 is switched off while the overlay keeps an IPv6 address on the
 // interface. Without an answer the sender waits for a timeout before it falls
-// back to IPv4. RFC 4443 2.4(e): never answer an ICMP error, a packet to a
-// multicast address, or one from the unspecified or a multicast address.
+// back to IPv4. Never answers an ICMP error or an unanswerable packet.
 static inline size_t tailscale_ipv6_unreachable(const uint8_t *packet, size_t length,
                                                 int icmp_error, uint8_t *out, size_t out_size) {
-    static const uint8_t unspecified[16];
-    if (icmp_error || length < 40 || (packet[0] >> 4) != 6 ||
-        packet[24] == 0xff || packet[8] == 0xff || memcmp(packet + 8, unspecified, 16) == 0)
+    if (icmp_error || !tailscale_ipv6_answerable(packet, length))
         return 0;
     return tailscale_icmp6_error(packet, length, 1 /* destination unreachable */,
                                  0 /* no route */, 0, out, out_size);

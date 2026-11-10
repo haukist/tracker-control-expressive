@@ -891,8 +891,27 @@ static void test_tailscale_ipv6_preserves_ipv6_disabled_setting(void) {
     CHECK(rst_writes == 1, "a reset is never answered with a reset");
     ((struct tcphdr *) (packet + sizeof(struct ip6_hdr)))->rst = 0;
 
-    // Anything else is answered with ICMPv6 "no route", except multicast.
+    // A reset is never sent from a multicast address or to no address.
     struct ip6_hdr *ip6 = (struct ip6_hdr *) packet;
+    struct in6_addr tcp_destination = ip6->ip6_dst, tcp_source = ip6->ip6_src;
+    inet_pton(AF_INET6, "ff02::1", &ip6->ip6_dst);
+    run(packet, length);
+    ip6->ip6_dst = tcp_destination;
+    memset(&ip6->ip6_src, 0, sizeof(ip6->ip6_src));
+    run(packet, length);
+    ip6->ip6_src = tcp_source;
+    CHECK(rst_writes == 1, "blocked IPv6 TCP to multicast or from :: is dropped without a reset");
+
+    // A flood of attempts to one destination is not answered one for one.
+    for (int i = 0; i < 100; i++)
+        run(packet, length);
+    // The limiter runs on the real clock: allow for refills if this loop is
+    // preempted, but 100 attempts must still be far from 100 resets.
+    CHECK(rst_writes > 1 && rst_writes < 50,
+          "resets for blocked IPv6 TCP are rate limited per destination");
+    int resets = rst_writes;
+
+    // Anything else is answered with ICMPv6 "no route", except multicast.
     ip6->ip6_nxt = IPPROTO_UDP;
     struct udphdr *udp = (struct udphdr *) (packet + sizeof(struct ip6_hdr));
     memset(udp, 0, sizeof(*udp));
@@ -918,7 +937,7 @@ static void test_tailscale_ipv6_preserves_ipv6_disabled_setting(void) {
     packet[sizeof(struct ip6_hdr)] = IPPROTO_UDP;
     ip6->ip6_plen = htons(8);
     run(packet, sizeof(struct ip6_hdr) + 8);
-    CHECK(tun_writes == 1 && rst_writes == 1, "a blocked IPv6 fragment is dropped without an answer");
+    CHECK(tun_writes == 1 && rst_writes == resets, "a blocked IPv6 fragment is dropped without an answer");
 
     // An ICMPv6 error is recognised behind an extension header and not answered,
     // while an echo request behind the same header is.
