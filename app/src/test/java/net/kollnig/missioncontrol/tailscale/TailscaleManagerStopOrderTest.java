@@ -64,6 +64,25 @@ public class TailscaleManagerStopOrderTest {
         assertEquals(0, pendingStops());
     }
 
+    /** What Service.onDestroy calls on the main thread must not wait for the engine. */
+    @Test public void destroyReturnsWhileTheEngineIsStillStopping() throws Exception {
+        Object life = ReflectionHelpers.getStaticField(TailscaleManager.class, "LIFE");
+        int[] nativeShutdowns = {0};
+        Thread destroy = new Thread(() -> TailscaleManager.destroy(() -> nativeShutdowns[0]++));
+        synchronized (life) {
+            // An engine shutdown in progress holds LIFE for as long as it takes.
+            destroy.start();
+            destroy.join(5_000);
+            assertFalse("destroy waited for the engine", destroy.isAlive());
+            assertEquals(1, nativeShutdowns[0]);
+            assertEquals("the stop is still owed", 1, pendingStops());
+            assertFalse(TailscaleManager.isBridgeAttached());
+        }
+        for (int i = 0; i < 100 && pendingStops() > 0; i++) Thread.sleep(50);
+        assertEquals(0, pendingStops());
+        assertEquals("Stopped", TailscaleManager.snapshot().state);
+    }
+
     private static int pendingStops() {
         Object lock = ReflectionHelpers.getStaticField(TailscaleManager.class, "PENDING_STOPS");
         synchronized (lock) {

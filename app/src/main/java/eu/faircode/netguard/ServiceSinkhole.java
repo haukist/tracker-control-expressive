@@ -4428,13 +4428,9 @@ public class ServiceSinkhole extends VpnService {
                 net.kollnig.missioncontrol.wg.WgEgress.INSTANCE.stop(
                         () -> { jni_wireguard_stop(); return kotlin.Unit.INSTANCE; });
                 jni_wireguard_required(false);
-                jni_tailscale_stop();
-                // detach() only waits for the packet reader, which the native
-                // shutdown just above has already woken.
-                net.kollnig.missioncontrol.tailscale.TailscaleManager.detach();
-                // onDestroy runs on the main thread; the engine shutdown does
-                // not touch the native context and finishes on its own thread.
-                net.kollnig.missioncontrol.tailscale.TailscaleManager.stopAsync();
+                // onDestroy runs on the main thread: this returns without
+                // waiting for the engine, which does not touch the native context.
+                net.kollnig.missioncontrol.tailscale.TailscaleManager.destroy(this::jni_tailscale_stop);
                 jni_tailscale_enabled(false, false);
                 net.kollnig.missioncontrol.dns.DnsProxyServer.getInstance(ServiceSinkhole.this).stop();
             } catch (Throwable ex) {

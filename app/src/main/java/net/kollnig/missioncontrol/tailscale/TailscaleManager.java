@@ -249,6 +249,19 @@ public final class TailscaleManager {
         }
     }
 
+    /**
+     * Teardown for Service.onDestroy, which runs on the main thread.
+     * Only the engine shutdown is asynchronous. shutdownNativeWriter and
+     * detach() run here and must return promptly: shutdownNativeWriter has
+     * to shut the native end of the packet bridge down, which wakes the
+     * packet reader that detach() waits for.
+     */
+    public static void destroy(Runnable shutdownNativeWriter) {
+        shutdownNativeWriter.run();
+        detach();
+        stopAsync();
+    }
+
     private static void stopFinished() {
         synchronized (PENDING_STOPS) {
             pendingStops--;
