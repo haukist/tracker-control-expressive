@@ -2067,8 +2067,10 @@ public class ServiceSinkhole extends VpnService {
         }
 
         // MTU
+        // Tailscale does not lower this: only overlay destinations are limited
+        // to 1280, and native code tells the kernel so per destination (path
+        // MTU discovery) instead of shrinking every ordinary packet.
         int mtu = jni_get_mtu();
-        if (tsEnabled) mtu = 1280;
         if (wgEnabled) {
             // WG default is 1420 (1500 path MTU minus typical WG+UDP+IP overhead).
             // Allow the config's [Interface] MTU to override but never exceed

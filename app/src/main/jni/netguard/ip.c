@@ -22,6 +22,8 @@
 #include "ip6_ext.h"
 #include "wg_flow_cache.h"
 #include "tailscale_route.h"
+#include "tailscale_pmtu.h"
+#include "tun_io.h"
 #include <stdatomic.h>
 #include <sys/time.h>
 
@@ -190,6 +192,47 @@ static void write_stateless_tcp_reset(const struct arguments *args, int version,
     rst.remote_seq = reset_ack;
     if (write_tcp(args, &rst, NULL, 0, 0, reset_has_ack, 0, 1) < 0)
         log_android(ANDROID_LOG_WARN, "TCP stateless reset write failed");
+}
+
+// The VPN interface keeps its large MTU for ordinary traffic, so the kernel
+// only learns the overlay's smaller limit per destination, the way it would
+// from a real next hop: answer an oversized packet with "packet too big" and
+// drop it. The engine would drop it anyway; this lets the sender shrink.
+// IPv4 without DF is answered too rather than fragmented here: Linux records
+// the reported path MTU for the destination either way and fragments later
+// datagrams itself, at the cost of the first one.
+static void reject_oversized_tailscale_packet(const struct arguments *args,
+                                              int version, int protocol,
+                                              const uint8_t *pkt, const uint8_t *payload,
+                                              size_t length) {
+    int icmp_error = 0;
+    if (payload >= pkt && (size_t) (payload - pkt) < length) {
+        uint8_t type = *payload;
+        if (protocol == IPPROTO_ICMP)
+            icmp_error = type == 3 || type == 4 || type == 5 || type == 11 || type == 12;
+        else if (protocol == IPPROTO_ICMPV6)
+            icmp_error = type < 128;
+    }
+
+    uint8_t answer[TAILSCALE_TOO_BIG_MAX];
+    size_t answer_length = tailscale_too_big(pkt, length, icmp_error, answer, sizeof(answer));
+    if (answer_length == 0)
+        return;
+    // Limit per destination (hashed, so a collision shares a limit): one noisy
+    // flow should not starve the discovery of another peer's path MTU. Only a
+    // packet that is actually answered spends from the limit.
+    static struct tailscale_too_big_limit limits[TAILSCALE_TOO_BIG_SLOTS];
+    const uint8_t *daddr = version == 4 ? pkt + 16 : pkt + 24;
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0 ||
+        !tailscale_too_big_permitted(
+                &limits[tailscale_too_big_slot(daddr, version == 4 ? 4 : 16)],
+                (uint64_t) now.tv_sec * 1000u + (uint64_t) now.tv_nsec / 1000000u))
+        return;
+
+    if (write_tun_packet(args->tun, args->ctx ? args->ctx->pipefds[0] : -1,
+                         answer, answer_length) < 0)
+        log_android(ANDROID_LOG_WARN, "Tailscale packet too big write failed");
 }
 
 // Re-run the authoritative UID lookup only after both the flow cache and the
@@ -1011,6 +1054,10 @@ void handle_ip(const struct arguments *args,
                  (tailscale_udp_policy && !reuse_tailscale_udp_verdict)) && uid >= 0)
                 route_flow_store_verdict(version, protocol, saddr, sport, daddr, dport,
                                          ROUTE_FLOW_VERDICT_ALLOWED);
+            if (length > TAILSCALE_MTU) {
+                reject_oversized_tailscale_packet(args, version, protocol, pkt, payload, length);
+                return;
+            }
             write_tailscale_packet(pkt, length);
             return;
         }

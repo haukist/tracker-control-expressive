@@ -13,6 +13,7 @@
 
 #include "netguard.h"
 #include "udp_state.h"
+#include "tailscale_pmtu.h"
 
 static int failures;
 static int unexpected_handler_calls;
@@ -20,6 +21,9 @@ static int policy_calls;
 static int uid_calls;
 static int wireguard_writes;
 static int tailscale_writes;
+static int tun_writes;
+static uint8_t last_tun_write[2048];
+static size_t last_tun_write_length;
 static int tailscale_enabled;
 static int tailscale_block_other_ipv6;
 static int rst_writes;
@@ -162,6 +166,15 @@ struct allowed *is_address_allowed(const struct arguments *unused,
     return policy_allowed ? &allowed_empty : NULL;
 }
 
+// The only direct TUN write in ip.c is the overlay "packet too big" answer.
+ssize_t __wrap_write(int fd, const void *data, size_t length) {
+    (void) fd;
+    tun_writes++;
+    last_tun_write_length = length < sizeof(last_tun_write) ? length : sizeof(last_tun_write);
+    memcpy(last_tun_write, data, last_tun_write_length);
+    return (ssize_t) length;
+}
+
 int tailscale_is_enabled(void) { return tailscale_enabled; }
 int tailscale_blocks_other_ipv6(void) { return tailscale_block_other_ipv6; }
 void write_tailscale_packet(const void *packet, size_t length) { tailscale_writes++; }
@@ -274,6 +287,8 @@ static void reset_fakes(void) {
     uid_calls = 0;
     wireguard_writes = 0;
     tailscale_writes = 0;
+    tun_writes = 0;
+    last_tun_write_length = 0;
     tailscale_enabled = 0;
     tailscale_block_other_ipv6 = 0;
     rst_writes = 0;
@@ -735,6 +750,84 @@ static void test_tailscale_udp_verdict_cache(void) {
     atomic_store(&wg_required, 1);
 }
 
+static void test_tailscale_oversized_packet_gets_too_big(void) {
+    _Alignas(struct iphdr) static uint8_t packet[2048];
+    static const uint8_t payload[1400];
+    reset_fakes();
+    atomic_store(&wg_required, 0);
+    tailscale_enabled = 1;
+
+    size_t length = make_udp(packet, 43020, payload, 1252);
+    set_destination(packet, "100.64.1.2");
+    CHECK(length == 1280, "fixture builds a packet of exactly the overlay MTU");
+    run(packet, length);
+    CHECK(tailscale_writes == 1 && tun_writes == 0,
+          "a packet of exactly the overlay MTU is forwarded");
+
+    length = make_udp(packet, 43020, payload, sizeof(payload));
+    set_destination(packet, "100.64.1.2");
+    run(packet, length);
+    CHECK(tailscale_writes == 1 && tun_writes == 1,
+          "an oversized Tailnet packet is answered instead of forwarded");
+    CHECK(last_tun_write_length == 576 && last_tun_write[9] == IPPROTO_ICMP &&
+          last_tun_write[20] == 3 && last_tun_write[21] == 4 &&
+          ((last_tun_write[26] << 8) | last_tun_write[27]) == 1280,
+          "the answer is ICMP fragmentation needed with the overlay MTU");
+    CHECK(memcmp(last_tun_write + 16, packet + 12, 4) == 0,
+          "the answer returns to the sending address");
+
+    // A sender that ignores the answer cannot turn each packet into a write.
+    for (int i = 0; i < 100; i++)
+        run(packet, length);
+    CHECK(tailscale_writes == 1 && tun_writes <= TAILSCALE_TOO_BIG_BURST + 1,
+          "repeated oversized Tailnet packets are dropped with rate-limited answers");
+    int answers = tun_writes;
+
+    // Another peer still learns its path MTU while the first one is limited.
+    length = make_udp(packet, 43020, payload, sizeof(payload));
+    set_destination(packet, "100.64.1.3");
+    CHECK(tailscale_too_big_slot((const uint8_t *) "d@", 4) !=
+          tailscale_too_big_slot((const uint8_t *) "d@", 4),
+          "fixture peers use separate rate limits");
+    run(packet, length);
+    CHECK(tun_writes == answers + 1 && memcmp(last_tun_write + 12, packet + 16, 4) == 0,
+          "a rate-limited peer does not suppress the answer for another peer");
+    answers = tun_writes;
+
+    static uint8_t packet6[2048];
+    length = make_tcp6(packet6, 43023, 0, 1, 1, payload, sizeof(payload));
+    inet_pton(AF_INET6, "fd7a:115c:a1e0::2", &((struct ip6_hdr *) packet6)->ip6_dst);
+    configured_uid = -1; // An established flow without owner fails closed first.
+    run(packet6, length);
+    CHECK(tun_writes == answers, "an unattributed oversized IPv6 packet gets no answer");
+    configured_uid = 10042;
+    run(packet6, length);
+    CHECK(tailscale_writes == 1 && tun_writes == answers + 1 &&
+          last_tun_write_length == 1280 && last_tun_write[6] == IPPROTO_ICMPV6 &&
+          last_tun_write[40] == 2 && ((last_tun_write[46] << 8) | last_tun_write[47]) == 1280,
+          "an oversized Tailnet IPv6 packet is answered with packet too big");
+    answers = tun_writes;
+
+    // The policy still decides first: a blocked flow gets no answer at all.
+    policy_allowed = 0;
+    length = make_udp(packet, 43021, payload, sizeof(payload));
+    set_destination(packet, "100.64.1.2");
+    run(packet, length);
+    CHECK(tailscale_writes == 1 && tun_writes == answers && blocked_udp_calls == 1,
+          "a blocked oversized Tailnet packet is dropped silently");
+
+    // Ordinary traffic keeps the large interface MTU.
+    reset_fakes();
+    atomic_store(&wg_required, 0);
+    tailscale_enabled = 1;
+    expect_direct = 1;
+    length = make_udp(packet, 43022, payload, sizeof(payload));
+    run(packet, length);
+    CHECK(direct_calls == 1 && tun_writes == 0,
+          "oversized ordinary traffic is not limited by the overlay MTU");
+    atomic_store(&wg_required, 1);
+}
+
 static void test_tailscale_dns_policy_and_native_sessions(void) {
     _Alignas(struct iphdr) uint8_t packet[256];
     reset_fakes();
@@ -818,6 +911,7 @@ int main(void) {
     test_split_tunnel_routes_outside_allowed_ips_direct();
     test_tailscale_tcp_revalidation();
     test_tailscale_udp_verdict_cache();
+    test_tailscale_oversized_packet_gets_too_big();
     test_tailscale_dns_policy_and_native_sessions();
     test_tailscale_ipv6_preserves_ipv6_disabled_setting();
     if (failures != 0)

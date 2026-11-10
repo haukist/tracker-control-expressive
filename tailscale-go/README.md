@@ -84,8 +84,10 @@ Do not raise the app's minSdk to accommodate a failed P0 build.
    `StatusJSON` in the browser flow. The snapshot includes state, assigned IPs,
    MTU, and MagicDNS settings. `NextEvent` wakes the host on backend changes
    without polling. A change in assigned addresses rebuilds the VPN before forwarding.
-5. Configure the existing VPN TUN with the assigned source addresses, MTU1280 and
-   Tailnet capture routes before sending packets. The bridge does not NAT packets.
+5. Configure the existing VPN TUN with the assigned source addresses and Tailnet
+   capture routes before sending packets. The bridge does not NAT packets. The
+   TUN keeps the host's own MTU: the host answers a Tailnet-bound packet above
+   1280 bytes with ICMP "packet too big" (path MTU discovery) and drops it.
 6. After existing TrackerControl policy accepts a packet, call `SendPacket`.
    Queue-full or any other error means drop, never forward via the physical network.
 7. Read replies on a background thread with `ReadPacket` and write them to that TUN.
