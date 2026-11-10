@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sync"
@@ -23,6 +24,7 @@ import (
 	"tailscale.com/net/tsdial"
 	"tailscale.com/tsd"
 	"tailscale.com/types/logid"
+	"tailscale.com/types/netmap"
 	"tailscale.com/util/eventbus"
 	"tailscale.com/wgengine"
 )
@@ -270,15 +272,7 @@ func (c *Client) SendPacket(packet []byte) error {
 	if c.backend.State() != ipn.Running || networkMap == nil {
 		return errors.New("Tailscale is not ready")
 	}
-	assigned := false
-	addresses := networkMap.GetAddresses()
-	for i := 0; i < addresses.Len(); i++ {
-		if addresses.At(i).Addr() == source {
-			assigned = true
-			break
-		}
-	}
-	if !assigned {
+	if !isAssigned(networkMap, source) {
 		return errors.New("Tailscale is not ready or packet source is not assigned")
 	}
 	if peer, ok := c.backend.PeerForIP(dest); !ok || peer.IsSelf {
@@ -299,7 +293,44 @@ func (c *Client) SendPacketPrefix(buffer []byte, length int) error {
 
 // ReadPacket blocks until a decrypted reply is available or Close is called.
 // Call it on a background thread; return the packet to the host's existing TUN.
-func (c *Client) ReadPacket() ([]byte, error) { return c.packets.receive() }
+// Only a packet from a Tailnet address to one of this node's own addresses is
+// returned: it goes straight to the host's TUN, past the host's firewall, so
+// the engine's inbound filter is not the only thing standing in front of it.
+func (c *Client) ReadPacket() ([]byte, error) {
+	for {
+		packet, err := c.packets.receive()
+		if err != nil {
+			return nil, err
+		}
+		if c.acceptReply(packet) {
+			return packet, nil
+		}
+	}
+}
+
+func (c *Client) acceptReply(packet []byte) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.closed {
+		return false
+	}
+	return isTailnetReply(packet, func(addr netip.Addr) bool {
+		return isAssigned(c.backend.NetMapNoPeers(), addr)
+	})
+}
+
+func isAssigned(networkMap *netmap.NetworkMap, addr netip.Addr) bool {
+	if networkMap == nil {
+		return false
+	}
+	addresses := networkMap.GetAddresses()
+	for i := 0; i < addresses.Len(); i++ {
+		if addresses.At(i).Addr() == addr {
+			return true
+		}
+	}
+	return false
+}
 
 // NetworkChanged asks the engine to re-check connectivity after the host has
 // observed a network change. It creates no polling timer.

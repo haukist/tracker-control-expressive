@@ -82,3 +82,42 @@ func FuzzPacketAddresses(f *testing.F) {
 		_, _, _ = packetAddresses(packet)
 	})
 }
+
+func TestOnlyTailnetRepliesToThisNodeReachTheHost(t *testing.T) {
+	own := map[netip.Addr]bool{
+		netip.MustParseAddr("100.64.1.1"):        true,
+		netip.MustParseAddr("fd7a:115c:a1e0::1"): true,
+	}
+	assigned := func(addr netip.Addr) bool { return own[addr] }
+	for _, test := range []struct {
+		packet []byte
+		want   bool
+	}{
+		{ipv4Packet("100.64.1.2", "100.64.1.1"), true},
+		{ipv6Packet("fd7a:115c:a1e0::2", "fd7a:115c:a1e0::1"), true},
+		{ipv4Packet("100.100.100.100", "100.64.1.1"), true}, // local service address
+		{ipv6Packet("fd7a:115c:a1e0::53", "fd7a:115c:a1e0::1"), true},
+		{ipv4Packet("100.64.0.0", "100.64.1.1"), true}, // edges of 100.64.0.0/10
+		{ipv4Packet("100.127.255.255", "100.64.1.1"), true},
+		{ipv4Packet("100.63.255.255", "100.64.1.1"), false},
+		{ipv4Packet("100.128.0.0", "100.64.1.1"), false},
+		{ipv4Packet("100.64.1.2", "100.64.1.9"), false},   // someone else's address
+		{ipv4Packet("100.64.1.2", "192.168.1.10"), false}, // the host's LAN address
+		{ipv4Packet("8.8.8.8", "100.64.1.1"), false},      // not from the Tailnet
+		{ipv4Packet("192.168.1.1", "100.64.1.1"), false},
+		{ipv6Packet("2001:db8::1", "fd7a:115c:a1e0::1"), false},
+		{ipv6Packet("fd7a:115c:a1e0::2", "fd7a:115c:a1e0::9"), false},
+		{[]byte{0x45}, false},
+		{make([]byte, packetMTU+1), false},
+	} {
+		if got := isTailnetReply(test.packet, assigned); got != test.want {
+			t.Errorf("isTailnetReply(%x) = %v, want %v", test.packet[:min(len(test.packet), 20)], got, test.want)
+		}
+	}
+	if isTailnetReply(ipv4Packet("100.64.1.2", "100.64.1.1"), func(netip.Addr) bool { return false }) {
+		t.Fatal("accepted a reply while no address is assigned")
+	}
+	if isAssigned(nil, netip.MustParseAddr("100.64.1.1")) {
+		t.Fatal("an address is assigned without a network map")
+	}
+}

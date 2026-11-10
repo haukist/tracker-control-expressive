@@ -37,6 +37,17 @@ func isPeerAddress(addr netip.Addr) bool {
 	return (tailnet4.Contains(addr) || tailnet6.Contains(addr)) && addr != quad4 && addr != quad6
 }
 
+// isTailnetReply reports whether a packet leaving the engine may be handed to
+// the host: well formed, at most one MTU, sent from the Tailnet address space
+// and addressed to this node.
+func isTailnetReply(packet []byte, assigned func(netip.Addr) bool) bool {
+	source, dest, err := packetAddresses(packet)
+	if err != nil {
+		return false
+	}
+	return (tailnet4.Contains(source) || tailnet6.Contains(source)) && assigned(dest)
+}
+
 func addressStrings(addresses []netip.Addr) []string {
 	result := make([]string, len(addresses))
 	for i, addr := range addresses {
