@@ -252,6 +252,16 @@ func (c *Client) SendPacket(packet []byte) error {
 	return c.packets.inject(packet)
 }
 
+// SendPacketPrefix is SendPacket for the first length bytes of a buffer the
+// host reuses for every packet, so it need not allocate an exact-size copy
+// per packet. The buffer is not retained after the call returns.
+func (c *Client) SendPacketPrefix(buffer []byte, length int) error {
+	if length < 0 || length > len(buffer) {
+		return errors.New("invalid packet length")
+	}
+	return c.SendPacket(buffer[:length])
+}
+
 // ReadPacket blocks until a decrypted reply is available or Close is called.
 // Call it on a background thread; return the packet to the host's existing TUN.
 func (c *Client) ReadPacket() ([]byte, error) { return c.packets.receive() }

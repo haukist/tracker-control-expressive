@@ -41,6 +41,21 @@ func TestPacketOwnershipAndSpacing(t *testing.T) {
 	}
 }
 
+// The host reuses one buffer for every packet and passes a prefix of it.
+func TestInjectCopiesPrefixOfReusedBuffer(t *testing.T) {
+	dev := newPacketTUN()
+	defer dev.Close()
+	packet := ipv4Packet("100.64.1.1", "100.64.1.2")
+	buffer := append(bytes.Clone(packet), 0xff, 0xff)
+	if err := dev.inject(buffer[:len(packet)]); err != nil {
+		t.Fatal(err)
+	}
+	clear(buffer)
+	if queued := <-dev.in; !bytes.Equal(queued, packet) {
+		t.Fatalf("queued packet follows the reused buffer: %x", queued)
+	}
+}
+
 func TestQueueBackpressureDoesNotBlock(t *testing.T) {
 	dev := newPacketTUN()
 	defer dev.Close()

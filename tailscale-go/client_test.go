@@ -1,6 +1,7 @@
 package tailscalebridge
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"path/filepath"
@@ -44,6 +45,19 @@ func TestBackendLifecycle(t *testing.T) {
 	}
 	if err := client.SendPacket(ipv4Packet("100.64.1.1", "100.64.1.2")); err == nil {
 		t.Fatal("accepted packet without authenticated/assigned identity")
+	}
+	packet := ipv4Packet("100.64.1.1", "100.64.1.2")
+	if err := client.SendPacketPrefix(packet, len(packet)+1); err == nil || err.Error() != "invalid packet length" {
+		t.Fatalf("length beyond the buffer: %v", err)
+	}
+	if err := client.SendPacketPrefix(packet, -1); err == nil || err.Error() != "invalid packet length" {
+		t.Fatalf("negative length: %v", err)
+	}
+	// A prefix is validated exactly like the same packet passed whole.
+	padded := append(bytes.Clone(packet), 0xff, 0xff)
+	whole, prefix := client.SendPacket(packet), client.SendPacketPrefix(padded, len(packet))
+	if whole == nil || prefix == nil || whole.Error() != prefix.Error() {
+		t.Fatalf("prefix differs from whole packet: %v / %v", whole, prefix)
 	}
 	if err := client.Close(); err != nil {
 		t.Fatal(err)

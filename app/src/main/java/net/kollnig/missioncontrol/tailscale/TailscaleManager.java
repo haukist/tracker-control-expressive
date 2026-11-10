@@ -14,7 +14,6 @@ import org.json.JSONObject;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.util.Arrays;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.ExecutorService;
@@ -143,7 +142,8 @@ public final class TailscaleManager {
                 int length;
                 while ((length = input.read(buffer)) > 0) {
                     if (target != null && target == client) {
-                        try { target.sendPacket(Arrays.copyOf(buffer, length)); }
+                        // Go copies the prefix it queues; no per-packet array here.
+                        try { target.sendPacketPrefix(buffer, length); }
                         catch (Exception ignored) { /* Not ready, forbidden, queue full: drop. */ }
                     }
                 }
