@@ -3,6 +3,7 @@
 Run with Python 3.10+, a JDK, and the repository's Gradle wrapper available.
 Only the task action is replaced; resolution and input declarations are real.
 """
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -117,9 +118,15 @@ class BuildTagTest(unittest.TestCase):
         self.assertEqual(len(tags), len(set(tags)))
         for tag in tags:
             self.assertRegex(tag, r"^ts_omit_[a-z0-9_]+$")
-        source = script.read_text(encoding="utf-8")
-        self.assertEqual(source.count('f"-tags={BUILD_TAGS}"'), 1)
-        self.assertNotIn('"-tags=ts_omit', source)
+        # The AAR build passes exactly the printed list, and nothing else as tags.
+        spec = importlib.util.spec_from_file_location("build_tailscale_poc", script)
+        builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(builder)
+        output = Path("out.aar")
+        self.assertEqual(builder.bind_command("gomobile", output), [
+            "gomobile", "bind", "-target=android", "-androidapi=23", f"-tags={printed}",
+            "-trimpath", "-ldflags=-buildid= -s -w -extldflags=-Wl,-z,max-page-size=16384",
+            "-o", str(output), "."])
 
 
 if __name__ == "__main__":

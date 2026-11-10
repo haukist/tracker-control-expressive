@@ -116,6 +116,13 @@ def validate_elf_alignment(data: bytes, abi: str) -> None:
         raise RuntimeError(f"No ELF load segments for {abi}.")
 
 
+def bind_command(mobile: str, output: Path) -> list[str]:
+    """The gomobile invocation that produces the shipped AAR."""
+    return [mobile, "bind", "-target=android", "-androidapi=23", f"-tags={BUILD_TAGS}",
+            "-trimpath", "-ldflags=-buildid= -s -w -extldflags=-Wl,-z,max-page-size=16384",
+            "-o", str(output), "."]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--go", help="Go executable")
@@ -164,12 +171,7 @@ def main() -> int:
 
     output = root / "tailscale-go" / "build" / "tailscale.aar"
     output.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [mobile, "bind", "-target=android", "-androidapi=23", f"-tags={BUILD_TAGS}",
-         "-trimpath", "-ldflags=-buildid= -s -w -extldflags=-Wl,-z,max-page-size=16384",
-         "-o", str(output), "."],
-        cwd=root / "tailscale-go", env=env, check=True,
-    )
+    subprocess.run(bind_command(mobile, output), cwd=root / "tailscale-go", env=env, check=True)
     validate_aar(output)
     print(f"Validated Tailscale AAR: {output}")
     return 0
