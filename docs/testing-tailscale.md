@@ -131,6 +131,22 @@ APKの出力先は `app/build/outputs/apk/github/debug/TrackerControl-githubDebu
 最新APKのSHA-256:
 `f49a911d3ceeb9ab3e8818b1ea122308d2f7ed6c140432c8b0229295e4c974c6`。
 
+## セキュリティ・性能レビュー対応版（2026-11-10）
+
+Tailnet宛てUDPの判定キャッシュ、VPNインターフェースのMTU維持と経路MTU通知、
+MagicDNSの名前表キャッシュ、破棄時の非同期停止、サインアウト時のノード鍵失効、
+設定インポートでの有効化防止、受信パケットの検査、不要機能のビルド除外、
+通常IPv6無効時の即時拒否を実装した。方式は [仕様書](design-tailscale-access.md) の3.3節を参照。
+
+- WSL Ubuntuのネイティブ防御テストが成功（経路MTU応答、レート制限、IPv6拒否を含む）。
+- Goの競合検出付きテストとvetが成功。ビルドタグは `--print-tags` の一式を使用。
+- Tailscale関連と設定インポートのJVMテストが成功。JVMテスト全件とLintは未実行。
+- `:app:assembleGithubDebug` が成功。
+- 実機では未確認: 経路MTUの収束（TCP/UDP、DF=0、未接続UDP、IPv4/IPv6、時間経過後）、
+  通常IPv6無効時の失敗通知とアプリごとのIPv4への切り替え、認証済み状態でのサインアウトに
+  よるノード鍵失効、ビルド除外後の実ログイン。このAPKは評価用であり、SHA-256は記録していない。
+  上記「経路MTU」より前の記録にある「MTU1280をOS側で確認」は、変更前の方式での結果である。
+
 ## コードレビューの記録
 
 `gemini-code-review` のGemini 3.8 Flash（medium）で差分を分割し、
