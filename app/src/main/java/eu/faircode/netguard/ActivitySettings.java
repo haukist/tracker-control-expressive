@@ -1566,6 +1566,7 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
         validateImportedEgress(this, handler.application);
 
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        keepTailscaleConsent(handler.application, prefs.getBoolean("ts_enabled", false));
         boolean wasEnabled = prefs.getBoolean("enabled", false);
         prefs.unregisterOnSharedPreferenceChangeListener(this);
         prefs.edit().putBoolean("enabled", false).apply();
@@ -1620,6 +1621,17 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
         } finally {
             prefs.registerOnSharedPreferenceChangeListener(this);
         }
+    }
+
+    /**
+     * A settings file must not switch Tailscale on. Enabling it makes the app
+     * contact Tailscale's servers, which the user only agrees to in the
+     * confirmation dialog of the Tailscale switch. An import therefore keeps
+     * it on only where it already was on.
+     */
+    static void keepTailscaleConsent(Map<String, Object> imported, boolean tailscaleEnabledBefore) {
+        if (!tailscaleEnabledBefore && Boolean.TRUE.equals(imported.get("ts_enabled")))
+            imported.put("ts_enabled", false);
     }
 
     static void validateImportedEgress(Context context, Map<String, ?> settings) throws SAXException {
