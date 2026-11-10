@@ -31,6 +31,8 @@ public final class TailscaleManager {
     private static final Object PENDING_STOPS = new Object();
     private static final String TAG = "TrackerControl.Tailscale";
     private static int pendingStops;
+    /** How long start() waits for an engine that is still shutting down. Changed only by tests. */
+    static long stopWaitMillis = 30_000;
     private static final Set<Runnable> listeners = new CopyOnWriteArraySet<>();
     private static volatile Client client;
     private static volatile TailscaleSnapshot snapshot = TailscaleSnapshot.stopped();
@@ -68,7 +70,12 @@ public final class TailscaleManager {
 
     /** Called on the VPN command thread. Engine survives native-only/TUN reloads. */
     public static void start(VpnService service, Runnable reconfigure) {
-        awaitPendingStops();
+        if (!awaitPendingStops()) {
+            // Never start a second engine beside one that is still closing:
+            // its socket protection hook is process-global.
+            failure("Tailscale is still stopping; try again shortly");
+            return;
+        }
         synchronized (LIFE) {
             if (client != null) return;
             try {
@@ -225,29 +232,45 @@ public final class TailscaleManager {
      */
     public static void stopAsync() {
         synchronized (PENDING_STOPS) { pendingStops++; }
-        new Thread(() -> {
-            try {
-                stop();
-            } catch (RuntimeException ex) {
-                Log.e(TAG, "Tailscale stop failed", ex);
-            } finally {
-                synchronized (PENDING_STOPS) {
-                    pendingStops--;
-                    PENDING_STOPS.notifyAll();
+        try {
+            new Thread(() -> {
+                try {
+                    stop();
+                } catch (RuntimeException ex) {
+                    Log.e(TAG, "Tailscale stop failed", ex);
+                } finally {
+                    stopFinished();
                 }
-            }
-        }, "Tailscale stop").start();
+            }, "Tailscale stop").start();
+        } catch (RuntimeException | Error ex) {
+            // No thread, so nobody else would ever take the request back.
+            stopFinished();
+            throw ex;
+        }
     }
 
-    private static void awaitPendingStops() {
+    private static void stopFinished() {
+        synchronized (PENDING_STOPS) {
+            pendingStops--;
+            PENDING_STOPS.notifyAll();
+        }
+    }
+
+    /** False if an earlier stop is still running after stopWaitMillis. */
+    private static boolean awaitPendingStops() {
         boolean interrupted = false;
+        boolean stopped = true;
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(stopWaitMillis);
         synchronized (PENDING_STOPS) {
             while (pendingStops > 0) {
-                try { PENDING_STOPS.wait(); }
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) { stopped = false; break; }
+                try { TimeUnit.NANOSECONDS.timedWait(PENDING_STOPS, remaining); }
                 catch (InterruptedException ex) { interrupted = true; }
             }
         }
         if (interrupted) Thread.currentThread().interrupt();
+        return stopped;
     }
 
     private static void join(Thread thread) {
