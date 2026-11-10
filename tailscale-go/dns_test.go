@@ -3,6 +3,8 @@ package tailscalebridge
 import (
 	"net/netip"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -205,9 +207,84 @@ func TestDNSCacheInvalidation(t *testing.T) {
 	if cache.get(8, start, build); builds != 4 {
 		t.Fatalf("records outlived a clock step: %d builds", builds)
 	}
-	// The caller read count 8 before a change arrived mid-build: the result is
-	// filed under 8, so the next query (now reading 9) builds again.
+	// Every later change count rebuilds, one query after the other.
 	if cache.get(9, start, build); builds != 5 {
-		t.Fatalf("a change during a build was lost: %d builds", builds)
+		t.Fatalf("a later backend change did not rebuild: %d builds", builds)
+	}
+}
+
+// await receives from channel, failing the test instead of hanging it when a
+// regression leaves the other side stuck.
+func await[T any](t *testing.T, channel <-chan T, what string) T {
+	t.Helper()
+	select {
+	case value := <-channel:
+		return value
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+		panic("unreachable")
+	}
+}
+
+// A backend change that arrives while records are being built must not be
+// attributed to them, and queries made after it must share a single rebuild.
+// Whether those queries were already queued behind the first build when it
+// finished cannot be forced from outside (a goroutine blocked on the cache's
+// mutex is not observable); the test arranges for it and asserts only what
+// holds in either order.
+func TestDNSCacheChangeDuringBuild(t *testing.T) {
+	var cache dnsCache
+	var builds atomic.Int32
+	now := time.Unix(1000, 0)
+	building, release := make(chan struct{}), make(chan struct{})
+	// Also on a failure path, so the blocked build never outlives the test.
+	releaseBuild := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseBuild)
+
+	stale := make(chan *dnsRecords, 1)
+	go func() {
+		stale <- cache.get(7, now, func() *dnsRecords {
+			builds.Add(1)
+			close(building)
+			<-release
+			return newDNSRecords(dnsStatus())
+		})
+	}()
+	await(t, building, "the first build to start")
+
+	// The change count moves to 8 mid-build; later queries read 8 and queue up.
+	const waiters = 4
+	fresh := make(chan *dnsRecords, waiters)
+	entered := make(chan struct{}, waiters)
+	for i := 0; i < waiters; i++ {
+		go func() {
+			entered <- struct{}{}
+			fresh <- cache.get(8, now, func() *dnsRecords {
+				builds.Add(1)
+				return newDNSRecords(dnsStatus())
+			})
+		}()
+	}
+	for i := 0; i < waiters; i++ {
+		await(t, entered, "a later query to start")
+	}
+	// Give the waiters time to block on the build in progress (see above).
+	time.Sleep(50 * time.Millisecond)
+	releaseBuild()
+
+	old := await(t, stale, "the first build to finish")
+	var current *dnsRecords
+	for i := 0; i < waiters; i++ {
+		records := await(t, fresh, "a later query to finish")
+		if records == old {
+			t.Fatal("records built before the change answered a query made after it")
+		}
+		if current != nil && records != current {
+			t.Fatal("waiting queries did not share one rebuild")
+		}
+		current = records
+	}
+	if got := builds.Load(); got != 2 {
+		t.Fatalf("%d builds, want one before and one after the change", got)
 	}
 }
