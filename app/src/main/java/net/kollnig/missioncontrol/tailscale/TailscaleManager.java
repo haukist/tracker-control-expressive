@@ -331,7 +331,10 @@ public final class TailscaleManager {
 
     /** null = ordinary DNS. Captured tailnet queries never fall back to public DNS. */
     public static byte[] resolveDNS(byte[] query) {
-        if (!Tailscalebridge.isTailnetDNS(query, snapshot.dnsSuffix)) return null;
+        String suffix = snapshot.dnsSuffix;
+        // Most queries are plainly ordinary; only the rest are worth a call into Go.
+        if (TailnetNames.isCertainlyOrdinary(query, suffix)) return null;
+        if (!Tailscalebridge.isTailnetDNS(query, suffix)) return null;
         Client current = client;
         if (current != null) {
             try {
