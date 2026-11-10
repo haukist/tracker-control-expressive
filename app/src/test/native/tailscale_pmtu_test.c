@@ -83,6 +83,30 @@ int main(void) {
     packet[0] = 0x50;
     assert(tailscale_too_big(packet, 1500, 0, out, sizeof(out)) == 0);
 
+    // Disabled ordinary IPv6: "no route", quoting the packet.
+    fill_ipv6(packet, 200);
+    length = tailscale_ipv6_unreachable(packet, 200, 0, out, sizeof(out));
+    assert(length == 248);
+    assert(out[6] == 58 && out[40] == 1 && out[41] == 0);
+    assert(out[44] == 0 && out[45] == 0 && out[46] == 0 && out[47] == 0);
+    assert(memcmp(out + 8, packet + 24, 16) == 0 && memcmp(out + 24, packet + 8, 16) == 0);
+    assert(memcmp(out + 48, packet, 200) == 0);
+    pseudo = tailscale_sum16(0, out + 8, 32) + (uint32_t) (length - 40) + 58;
+    assert(checksum_ok(pseudo, out + 40, length - 40));
+    assert(tailscale_ipv6_unreachable(packet, 200, 1, out, sizeof(out)) == 0);
+    assert(tailscale_ipv6_unreachable(packet, 39, 0, out, sizeof(out)) == 0);
+    // Never answer multicast (router solicitations, MLD) or an unspecified source.
+    packet[24] = 0xff;
+    assert(tailscale_ipv6_unreachable(packet, 200, 0, out, sizeof(out)) == 0);
+    fill_ipv6(packet, 200);
+    packet[8] = 0xff;
+    assert(tailscale_ipv6_unreachable(packet, 200, 0, out, sizeof(out)) == 0);
+    fill_ipv6(packet, 200);
+    memset(packet + 8, 0, 16);
+    assert(tailscale_ipv6_unreachable(packet, 200, 0, out, sizeof(out)) == 0);
+    fill_ipv4(packet, 200);
+    assert(tailscale_ipv6_unreachable(packet, 200, 0, out, sizeof(out)) == 0);
+
     struct tailscale_too_big_limit limit = {0};
     int permitted = 0;
     for (int i = 0; i < 100; i++)

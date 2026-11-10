@@ -201,27 +201,27 @@ static void write_stateless_tcp_reset(const struct arguments *args, int version,
 // IPv4 without DF is answered too rather than fragmented here: Linux records
 // the reported path MTU for the destination either way and fragments later
 // datagrams itself, at the cost of the first one.
-static void reject_oversized_tailscale_packet(const struct arguments *args,
-                                              int version, int protocol,
-                                              const uint8_t *pkt, const uint8_t *payload,
-                                              size_t length) {
-    int icmp_error = 0;
-    if (payload >= pkt && (size_t) (payload - pkt) < length) {
-        uint8_t type = *payload;
-        if (protocol == IPPROTO_ICMP)
-            icmp_error = type == 3 || type == 4 || type == 5 || type == 11 || type == 12;
-        else if (protocol == IPPROTO_ICMPV6)
-            icmp_error = type < 128;
-    }
+// An ICMP error must never be answered with another one.
+static int is_icmp_error(int protocol, const uint8_t *pkt, const uint8_t *payload,
+                         size_t length) {
+    if (payload < pkt || (size_t) (payload - pkt) >= length)
+        return 0;
+    uint8_t type = *payload;
+    if (protocol == IPPROTO_ICMP)
+        return type == 3 || type == 4 || type == 5 || type == 11 || type == 12;
+    return protocol == IPPROTO_ICMPV6 && type < 128;
+}
 
-    uint8_t answer[TAILSCALE_TOO_BIG_MAX];
-    size_t answer_length = tailscale_too_big(pkt, length, icmp_error, answer, sizeof(answer));
+// Writes a locally generated ICMP error to the app. Limited per destination
+// (hashed, so a collision shares a limit): one noisy flow should not starve
+// the answer another destination is waiting for. Packets that get no
+// error at all (answer_length 0) do not spend from the limit.
+static void write_tailscale_icmp_error(const struct arguments *args,
+                                       struct tailscale_too_big_limit *limits,
+                                       int version, const uint8_t *pkt,
+                                       const uint8_t *answer, size_t answer_length) {
     if (answer_length == 0)
         return;
-    // Limit per destination (hashed, so a collision shares a limit): one noisy
-    // flow should not starve the discovery of another peer's path MTU. Only a
-    // packet that is actually answered spends from the limit.
-    static struct tailscale_too_big_limit limits[TAILSCALE_TOO_BIG_SLOTS];
     const uint8_t *daddr = version == 4 ? pkt + 16 : pkt + 24;
     struct timespec now;
     if (clock_gettime(CLOCK_MONOTONIC, &now) != 0 ||
@@ -232,7 +232,47 @@ static void reject_oversized_tailscale_packet(const struct arguments *args,
 
     if (write_tun_packet(args->tun, args->ctx ? args->ctx->pipefds[0] : -1,
                          answer, answer_length) < 0)
-        log_android(ANDROID_LOG_WARN, "Tailscale packet too big write failed");
+        log_android(ANDROID_LOG_WARN, "Tailscale ICMP error write failed");
+}
+
+static void reject_oversized_tailscale_packet(const struct arguments *args,
+                                              int version, int protocol,
+                                              const uint8_t *pkt, const uint8_t *payload,
+                                              size_t length) {
+    static struct tailscale_too_big_limit limits[TAILSCALE_TOO_BIG_SLOTS];
+    uint8_t answer[TAILSCALE_TOO_BIG_MAX];
+    write_tailscale_icmp_error(
+            args, limits, version, pkt, answer,
+            tailscale_too_big(pkt, length, is_icmp_error(protocol, pkt, payload, length),
+                              answer, sizeof(answer)));
+}
+
+// Ordinary IPv6 is switched off, but the overlay puts an IPv6 address and a
+// default route on the interface, so apps still try IPv6 destinations. Tell
+// them at once instead of letting each attempt time out before the IPv4
+// fallback: reset TCP, and answer UDP and ICMPv6 requests with "no route".
+// protocol and payload are the result of handle_ip()'s extension header walk,
+// so an ICMPv6 error behind extension headers is still recognised. Anything
+// the walk could not resolve to an upper-layer header is dropped silently:
+// that includes every fragment, and a non-first fragment must not be answered.
+static void reject_disabled_ipv6_packet(const struct arguments *args, int protocol,
+                                        const uint8_t *pkt, const uint8_t *payload,
+                                        size_t length) {
+    if (protocol == IPPROTO_TCP) {
+        if (payload >= pkt && (size_t) (payload - pkt) + sizeof(struct tcphdr) <= length &&
+            !((const struct tcphdr *) payload)->rst)
+            write_stateless_tcp_reset(args, 6, pkt, payload, length);
+        return;
+    }
+    if (protocol != IPPROTO_UDP && protocol != IPPROTO_ICMPV6)
+        return;
+    static struct tailscale_too_big_limit limits[TAILSCALE_TOO_BIG_SLOTS];
+    uint8_t answer[TAILSCALE_TOO_BIG_MAX];
+    write_tailscale_icmp_error(
+            args, limits, 6, pkt, answer,
+            tailscale_ipv6_unreachable(pkt, length,
+                                       is_icmp_error(protocol, pkt, payload, length),
+                                       answer, sizeof(answer)));
 }
 
 // Re-run the authoritative UID lookup only after both the flow cache and the
@@ -826,8 +866,10 @@ void handle_ip(const struct arguments *args,
     // of that flow inherits the answer from it.
     // Adding a Tailnet IPv6 address must not silently enable ordinary IPv6
     // when the user's existing IPv6 setting is off (the builder captures ::/0).
-    if (version == 6 && tailscale_blocks_other_ipv6() && !tailscale_dest)
+    if (version == 6 && tailscale_blocks_other_ipv6() && !tailscale_dest) {
+        reject_disabled_ipv6_packet(args, protocol, pkt, payload, length);
         return;
+    }
     int sni_candidate = (is_play && protocol == IPPROTO_TCP && dport == 443 && !tailscale_dest);
     if (protocol == IPPROTO_ICMP || protocol == IPPROTO_ICMPV6 ||
         (protocol == IPPROTO_UDP && !reuse_wg_udp_verdict &&

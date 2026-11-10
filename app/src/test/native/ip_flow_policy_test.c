@@ -884,6 +884,62 @@ static void test_tailscale_ipv6_preserves_ipv6_disabled_setting(void) {
     run(packet, length);
     CHECK(policy_calls == 0 && tailscale_writes == 0 && unexpected_handler_calls == 0,
           "ordinary IPv6 stays blocked while Tailnet IPv6 is enabled");
+    CHECK(rst_writes == 1 && tun_writes == 0,
+          "a blocked IPv6 TCP attempt is reset so the app falls back at once");
+    ((struct tcphdr *) (packet + sizeof(struct ip6_hdr)))->rst = 1;
+    run(packet, length);
+    CHECK(rst_writes == 1, "a reset is never answered with a reset");
+    ((struct tcphdr *) (packet + sizeof(struct ip6_hdr)))->rst = 0;
+
+    // Anything else is answered with ICMPv6 "no route", except multicast.
+    struct ip6_hdr *ip6 = (struct ip6_hdr *) packet;
+    ip6->ip6_nxt = IPPROTO_UDP;
+    struct udphdr *udp = (struct udphdr *) (packet + sizeof(struct ip6_hdr));
+    memset(udp, 0, sizeof(*udp));
+    udp->source = htons(43030);
+    udp->dest = htons(443);
+    udp->len = htons(sizeof(struct udphdr));
+    ip6->ip6_plen = htons(sizeof(struct udphdr));
+    size_t udp_length = sizeof(struct ip6_hdr) + sizeof(struct udphdr);
+    run(packet, udp_length);
+    CHECK(policy_calls == 0 && tailscale_writes == 0 && tun_writes == 1 &&
+          last_tun_write[6] == IPPROTO_ICMPV6 && last_tun_write[40] == 1 &&
+          last_tun_write[41] == 0 && memcmp(last_tun_write + 24, packet + 8, 16) == 0,
+          "a blocked IPv6 datagram is answered with no route to destination");
+    struct in6_addr unicast = ip6->ip6_dst;
+    inet_pton(AF_INET6, "ff02::fb", &ip6->ip6_dst);
+    run(packet, udp_length);
+    CHECK(tun_writes == 1, "blocked IPv6 multicast is dropped without an answer");
+    ip6->ip6_dst = unicast;
+
+    // A fragment has no upper-layer header here; it may be a non-first one.
+    ip6->ip6_nxt = IPPROTO_FRAGMENT;
+    memset(packet + sizeof(struct ip6_hdr), 0, 8);
+    packet[sizeof(struct ip6_hdr)] = IPPROTO_UDP;
+    ip6->ip6_plen = htons(8);
+    run(packet, sizeof(struct ip6_hdr) + 8);
+    CHECK(tun_writes == 1 && rst_writes == 1, "a blocked IPv6 fragment is dropped without an answer");
+
+    // An ICMPv6 error is recognised behind an extension header and not answered,
+    // while an echo request behind the same header is.
+    ip6->ip6_nxt = IPPROTO_DSTOPTS;
+    uint8_t *extension = packet + sizeof(struct ip6_hdr);
+    memset(extension, 0, 16);
+    extension[0] = IPPROTO_ICMPV6;
+    extension[2] = 1; // PadN covering the remaining six bytes
+    extension[3] = 4;
+    extension[8] = 1; // destination unreachable
+    ip6->ip6_plen = htons(16);
+    run(packet, sizeof(struct ip6_hdr) + 16);
+    CHECK(tun_writes == 1, "an ICMPv6 error behind an extension header is not answered");
+    extension[8] = 128; // echo request
+    int handlers_before = unexpected_handler_calls;
+    handle_ip(&args, packet, sizeof(struct ip6_hdr) + 16, -1, 0, 1000);
+    CHECK(tun_writes == 2 && unexpected_handler_calls == handlers_before,
+          "a blocked ICMPv6 echo request is answered with no route");
+    ip6->ip6_nxt = IPPROTO_TCP;
+    ip6->ip6_plen = htons(sizeof(struct tcphdr));
+    make_tcp6(packet, 43001, 1, 0, 0, NULL, 0);
     inet_pton(AF_INET6, "fd7a:115c:a1e0::2", &((struct ip6_hdr *) packet)->ip6_dst);
     run(packet, length);
     CHECK(policy_calls == 1 && tailscale_writes == 1 && wireguard_writes == 0,

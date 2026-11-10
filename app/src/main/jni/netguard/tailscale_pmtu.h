@@ -82,6 +82,61 @@ static inline void tailscale_put_checksum(uint8_t *field, uint32_t sum) {
     field[1] = (uint8_t) checksum;
 }
 
+// An ICMPv6 error about packet, sent back to its source as if by the
+// destination. RFC 4443 2.4(c): quote as much of the packet as fits the
+// minimum IPv6 MTU. Returns the error's length, or 0 if it cannot be built.
+static inline size_t tailscale_icmp6_error(const uint8_t *packet, size_t length,
+                                           uint8_t type, uint8_t code, uint32_t parameter,
+                                           uint8_t *out, size_t out_size) {
+    if (length < 40 || (packet[0] >> 4) != 6)
+        return 0;
+    size_t quoted = length;
+    if (quoted > TAILSCALE_TOO_BIG_MAX - 48)
+        quoted = TAILSCALE_TOO_BIG_MAX - 48;
+    size_t icmp_length = 8 + quoted;
+    size_t total = 40 + icmp_length;
+    if (out_size < total)
+        return 0;
+
+    memset(out, 0, 48);
+    out[0] = 0x60;
+    out[4] = (uint8_t) (icmp_length >> 8);
+    out[5] = (uint8_t) icmp_length;
+    out[6] = 58;                        // ICMPv6
+    out[7] = 64;                        // hop limit
+    memcpy(out + 8, packet + 24, 16);   // from the unreachable destination
+    memcpy(out + 24, packet + 8, 16);
+
+    out[40] = type;
+    out[41] = code;
+    out[44] = (uint8_t) (parameter >> 24);
+    out[45] = (uint8_t) (parameter >> 16);
+    out[46] = (uint8_t) (parameter >> 8);
+    out[47] = (uint8_t) parameter;
+    memcpy(out + 48, packet, quoted);
+
+    // Pseudo header: both addresses, upper-layer length, next header.
+    uint32_t sum = tailscale_sum16(0, out + 8, 32);
+    sum += (uint32_t) icmp_length + 58;
+    tailscale_put_checksum(out + 42, tailscale_sum16(sum, out + 40, icmp_length));
+    return total;
+}
+
+// Builds "no route to destination" for an IPv6 packet that is dropped because
+// ordinary IPv6 is switched off while the overlay keeps an IPv6 address on the
+// interface. Without an answer the sender waits for a timeout before it falls
+// back to IPv4. RFC 4443 2.4(e): never answer an ICMP error, a packet to a
+// multicast address, or one from the unspecified or a multicast address.
+static inline size_t tailscale_ipv6_unreachable(const uint8_t *packet, size_t length,
+                                                int icmp_error, uint8_t *out, size_t out_size) {
+    static const uint8_t unspecified[16];
+    if (icmp_error || length < 40 || (packet[0] >> 4) != 6 ||
+        packet[24] == 0xff || packet[8] == 0xff || memcmp(packet + 8, unspecified, 16) == 0)
+        return 0;
+    return tailscale_icmp6_error(packet, length, 1 /* destination unreachable */,
+                                 0 /* no route */, 0, out, out_size);
+}
+
 // Builds the "packet too big" answer for an oversized overlay packet, as the
 // next hop would. The caller has already validated the IP header of packet.
 // Returns the answer's length, or 0 when no answer must be sent: a packet that
@@ -120,38 +175,9 @@ static inline size_t tailscale_too_big(const uint8_t *packet, size_t length,
         return total;
     }
 
-    if ((packet[0] >> 4) == 6) {
-        if (length < 40)
-            return 0;
-        // RFC 4443 2.4(c): as much of the packet as fits the minimum IPv6 MTU.
-        size_t quoted = length;
-        if (quoted > TAILSCALE_TOO_BIG_MAX - 48)
-            quoted = TAILSCALE_TOO_BIG_MAX - 48;
-        size_t icmp_length = 8 + quoted;
-        size_t total = 40 + icmp_length;
-        if (out_size < total)
-            return 0;
-
-        memset(out, 0, 48);
-        out[0] = 0x60;
-        out[4] = (uint8_t) (icmp_length >> 8);
-        out[5] = (uint8_t) icmp_length;
-        out[6] = 58;                        // ICMPv6
-        out[7] = 64;                        // hop limit
-        memcpy(out + 8, packet + 24, 16);   // from the unreachable destination
-        memcpy(out + 24, packet + 8, 16);
-
-        out[40] = 2;                        // packet too big
-        out[46] = (uint8_t) (TAILSCALE_MTU >> 8);
-        out[47] = (uint8_t) (TAILSCALE_MTU & 0xff);
-        memcpy(out + 48, packet, quoted);
-
-        // Pseudo header: both addresses, upper-layer length, next header.
-        uint32_t sum = tailscale_sum16(0, out + 8, 32);
-        sum += (uint32_t) icmp_length + 58;
-        tailscale_put_checksum(out + 42, tailscale_sum16(sum, out + 40, icmp_length));
-        return total;
-    }
+    if ((packet[0] >> 4) == 6)
+        return tailscale_icmp6_error(packet, length, 2 /* packet too big */, 0,
+                                     TAILSCALE_MTU, out, out_size);
 
     return 0;
 }
