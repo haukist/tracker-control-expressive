@@ -274,8 +274,23 @@ public final class TailscaleManager {
         return new File(context.getNoBackupFilesDir(), "tailscale");
     }
 
+    /**
+     * Erases the local identity. While the engine runs it first asks the
+     * control server to expire the node key (bounded, best effort), so the
+     * erased keys are useless even if a copy of them survives somewhere.
+     * Never call this on the main thread: it waits for the control server
+     * (up to five seconds) and for the engine shutdown. The VPN command
+     * thread is the only caller.
+     */
     public static void logout(Context context) throws IOException {
         synchronized (LIFE) {
+            Client current = client;
+            if (current != null)
+                try { current.logout(); }
+                catch (Exception ex) {
+                    // The local erase still happens. No detail: it may name the account.
+                    Log.w(TAG, "Tailscale server-side logout failed; erasing local state");
+                }
             stop();
             File root = stateDirectory(context);
             deleteState(root, root.getCanonicalPath());

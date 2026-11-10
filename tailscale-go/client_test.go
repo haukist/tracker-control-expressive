@@ -6,6 +6,7 @@ import (
 	"io"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"tailscale.com/feature/buildfeatures"
 	"tailscale.com/logpolicy"
@@ -59,6 +60,14 @@ func TestBackendLifecycle(t *testing.T) {
 	if whole == nil || prefix == nil || whole.Error() != prefix.Error() {
 		t.Fatalf("prefix differs from whole packet: %v / %v", whole, prefix)
 	}
+	// Never registered: there is no key to expire and nothing to wait for.
+	started := time.Now()
+	if err := client.Logout(); err != nil {
+		t.Fatalf("Logout without an identity: %v", err)
+	}
+	if time.Since(started) >= logoutTimeout {
+		t.Fatal("Logout without an identity waited for the control server")
+	}
 	if err := client.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -73,6 +82,9 @@ func TestBackendLifecycle(t *testing.T) {
 	}
 	if err := client.Login(); err != io.ErrClosedPipe {
 		t.Fatalf("Login after close: %v", err)
+	}
+	if err := client.Logout(); err != io.ErrClosedPipe {
+		t.Fatalf("Logout after close: %v", err)
 	}
 	if err := client.NetworkChanged(""); err != io.ErrClosedPipe {
 		t.Fatalf("NetworkChanged after close: %v", err)

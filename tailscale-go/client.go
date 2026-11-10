@@ -16,6 +16,7 @@ import (
 
 	"tailscale.com/feature/buildfeatures"
 	"tailscale.com/ipn"
+	"tailscale.com/ipn/ipnauth"
 	"tailscale.com/ipn/ipnlocal"
 	"tailscale.com/ipn/store"
 	"tailscale.com/net/netmon"
@@ -172,6 +173,25 @@ func (c *Client) Login() error {
 		return io.ErrClosedPipe
 	}
 	return c.backend.StartLoginInteractive(context.Background())
+}
+
+// logoutTimeout bounds the wait for the control server during Logout. The host
+// erases its local state afterwards either way.
+const logoutTimeout = 5 * time.Second
+
+// Logout asks the control server to expire this node's key, so that a copy of
+// the local state is useless once the host has erased it. It is best effort:
+// offline, or already logged out, the host still erases the local state. Call
+// it before Close.
+func (c *Client) Logout() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.closed {
+		return io.ErrClosedPipe
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), logoutTimeout)
+	defer cancel()
+	return c.backend.Logout(ctx, ipnauth.Self)
 }
 
 // StatusJSON is an on-demand snapshot, not a request to start background polling.

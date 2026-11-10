@@ -94,8 +94,11 @@ Do not raise the app's minSdk to accommodate a failed P0 build.
 8. On connectivity changes, call `NetworkChanged` with the current underlying
    interface name (empty when disconnected). Supply the current interface list.
 9. Call `Close` before replacing the engine or releasing platform callbacks.
-   It wakes blocked readers and retains identity. Logout additionally needs
-   secure removal of this dedicated state directory after all resources stop.
+   It wakes blocked readers and retains identity. To log out, call `Logout`
+   first (it asks the control server to expire the node key, waiting at most
+   five seconds), then `Close`, then remove this dedicated state directory
+   once all resources have stopped. The local removal must not depend on
+   `Logout` succeeding.
 
 Interface JSON is an array, for example:
 
