@@ -182,9 +182,10 @@ func (c *Client) Login() error {
 const logoutTimeout = 5 * time.Second
 
 // Logout asks the control server to expire this node's key, so that a copy of
-// the local state is useless once the host has erased it. It is best effort:
-// offline, or already logged out, the host still erases the local state. Call
-// it before Close.
+// the local state would be useless once the host has erased it. It is best
+// effort: when it fails (offline, timeout, server error) the key may stay
+// valid (until it expires, or for good where key expiry is switched off),
+// and the host erases the local state regardless. Call it before Close.
 func (c *Client) Logout() error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

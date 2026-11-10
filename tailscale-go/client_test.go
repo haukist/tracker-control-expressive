@@ -60,7 +60,8 @@ func TestBackendLifecycle(t *testing.T) {
 	if whole == nil || prefix == nil || whole.Error() != prefix.Error() {
 		t.Fatalf("prefix differs from whole packet: %v / %v", whole, prefix)
 	}
-	// Never registered: there is no key to expire and nothing to wait for.
+	// Never registered: upstream returns at once, without asking the control
+	// server (LocalBackend.Logout: "Already logged out").
 	started := time.Now()
 	if err := client.Logout(); err != nil {
 		t.Fatalf("Logout without an identity: %v", err)

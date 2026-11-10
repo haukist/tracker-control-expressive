@@ -318,8 +318,12 @@ public final class TailscaleManager {
 
     /**
      * Erases the local identity. While the engine runs it first asks the
-     * control server to expire the node key (bounded, best effort), so the
-     * erased keys are useless even if a copy of them survives somewhere.
+     * control server to expire the node key, so that a copy of the erased
+     * keys surviving somewhere would be useless. That request is bounded and
+     * best effort: offline, on a timeout or on a server error the key may
+     * stay valid, until it expires or for good where the tailnet has key
+     * expiry switched off. The local erase is attempted
+     * either way and reports its own failure.
      * Never call this on the main thread: it waits for the control server
      * (up to five seconds) and for the engine shutdown. The VPN command
      * thread is the only caller.
