@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"tailscale.com/feature/buildfeatures"
 	"tailscale.com/ipn"
@@ -49,6 +50,10 @@ type Client struct {
 	closed  bool
 	events  chan struct{}
 	done    chan struct{}
+
+	// changes counts backend notifications; a new count invalidates dns.
+	changes atomic.Uint64
+	dns     dnsCache
 }
 
 // New starts a real Tailscale backend with a private persistent state directory.
@@ -145,6 +150,7 @@ func startBackend(stateDir, hostname string) (_ *Client, err error) {
 	client := &Client{backend: backend, packets: packets, monitor: monitor, dialer: dialer,
 		bus: bus, events: make(chan struct{}, 1), done: make(chan struct{})}
 	backend.SetNotifyCallback(func(ipn.Notify) {
+		client.changes.Add(1)
 		select {
 		case client.events <- struct{}{}:
 		default:
@@ -213,7 +219,16 @@ func (c *Client) ResolveDNS(query []byte) ([]byte, error) {
 	if c.closed {
 		return nil, io.ErrClosedPipe
 	}
-	return resolveLocalDNS(query, c.backend.Status())
+	return c.dnsRecords().resolve(query)
+}
+
+// dnsRecords returns the current name table. A full backend status visits
+// every peer and the engine, which is too much to repeat for each query.
+func (c *Client) dnsRecords() *dnsRecords {
+	// Read the count before building: a change during the build forces another.
+	return c.dns.get(c.changes.Load(), time.Now(), func() *dnsRecords {
+		return newDNSRecords(c.backend.Status())
+	})
 }
 
 // SendPacket accepts one policy-approved IP packet. Public internet, subnet
