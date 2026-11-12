@@ -32,6 +32,8 @@ public final class TailscaleManager {
     private static final String TAG = "TrackerControl.Tailscale";
     private static int pendingStops;
     private static final int PACKET_BUFFER = 2048;
+    /** How long stop() and detach() wait for one bridge thread. Changed only by tests. */
+    static long threadWaitMillis = 5_000;
     /** How long start() waits for an engine that is still shutting down. Changed only by tests. */
     static long stopWaitMillis = 30_000;
     private static final Set<Runnable> listeners = new CopyOnWriteArraySet<>();
@@ -292,11 +294,23 @@ public final class TailscaleManager {
         return stopped;
     }
 
+    /**
+     * Waits for a bridge thread to end, but not for ever: stop() runs on the
+     * VPN command thread, where a thread that fails to end would otherwise
+     * hold up every later start, reload and rule update. Each of these
+     * threads ends by itself once its client is closed or replaced.
+     */
     private static void join(Thread thread) {
         if (thread == null || thread == Thread.currentThread()) return;
         boolean interrupted = false;
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(threadWaitMillis);
         while (thread.isAlive()) {
-            try { thread.join(); }
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) {
+                Log.w(TAG, thread.getName() + " thread did not end in time");
+                break;
+            }
+            try { TimeUnit.NANOSECONDS.timedJoin(thread, remaining); }
             catch (InterruptedException ex) { interrupted = true; }
         }
         if (interrupted) Thread.currentThread().interrupt();
@@ -305,8 +319,14 @@ public final class TailscaleManager {
     private static void awaitNetworkStop(ExecutorService executor) {
         if (executor == null) return;
         boolean interrupted = false;
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(threadWaitMillis);
         while (!executor.isTerminated()) {
-            try { executor.awaitTermination(1, TimeUnit.DAYS); }
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) {
+                Log.w(TAG, "Tailscale network executor did not end in time");
+                break;
+            }
+            try { executor.awaitTermination(remaining, TimeUnit.NANOSECONDS); }
             catch (InterruptedException ex) { interrupted = true; }
         }
         if (interrupted) Thread.currentThread().interrupt();
