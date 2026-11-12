@@ -372,6 +372,11 @@ public final class TailscaleManager {
         if (file.exists() && !file.delete()) throw new IOException("Could not remove local Tailscale state");
     }
 
+    /** False only for a query resolveDNS answers with null. Does not call into Go. */
+    public static boolean mayResolveDNS(byte[] query) {
+        return !TailnetNames.isCertainlyOrdinary(query, snapshot.dnsSuffix);
+    }
+
     /** null = ordinary DNS. Captured tailnet queries never fall back to public DNS. */
     public static byte[] resolveDNS(byte[] query) {
         String suffix = snapshot.dnsSuffix;

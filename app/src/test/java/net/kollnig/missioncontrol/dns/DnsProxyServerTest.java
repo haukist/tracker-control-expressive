@@ -363,6 +363,50 @@ public class DnsProxyServerTest {
         }
     }
 
+    /** A Tailscale engine that stalls, then fails, must not take ordinary names with it. */
+    @Test
+    public void ordinaryNamesAreAnsweredWhileTailscaleDnsStalls() throws Exception {
+        byte[] query = plainQuery();
+        byte[] tailnetQuery = QUERY.clone();
+        tailnetQuery[1] = 0x7f;
+        CountDownLatch release = new CountDownLatch(1);
+        try (PlainUpstream upstream = new PlainUpstream(query, largeAnswer(query))) {
+            proxy = new DnsProxyServer(RuntimeEnvironment.getApplication(), new DnsProxyServer.LocalResolver() {
+                @Override public byte[] resolve(byte[] asked) {
+                    if (asked[1] != 0x7f) return null;
+                    try { release.await(10, TimeUnit.SECONDS); }
+                    catch (InterruptedException ex) { Thread.currentThread().interrupt(); }
+                    throw new IllegalStateException("engine failed");
+                }
+                @Override public boolean mayAnswer(byte[] asked) { return asked[1] == 0x7f; }
+            }, () -> Collections.singletonList(upstream.address()));
+            prefs.edit().putBoolean("ts_enabled", true).putBoolean("doh_enabled", false).commit();
+            proxy.start();
+            try (DatagramSocket stalled = new DatagramSocket()) {
+                // More Tailnet names than there are workers for them.
+                for (int i = 0; i < 8; i++)
+                    stalled.send(new DatagramPacket(tailnetQuery, tailnetQuery.length,
+                            InetAddress.getByName(DnsProxyServer.DNS_PROXY_ADDRESS),
+                            DnsProxyServer.DNS_PROXY_PORT));
+                byte[] udp = queryUdp(query);
+                assertTrue("the ordinary name was not answered by the upstream resolver", (udp[2] & 2) != 0);
+
+                // The failed lookups are refused here, never passed upstream.
+                release.countDown();
+                stalled.setSoTimeout(3000);
+                DatagramPacket refused = new DatagramPacket(new byte[512], 512);
+                stalled.receive(refused);
+                assertEquals(0x7f, refused.getData()[1]);
+                assertEquals("SERVFAIL", 2, refused.getData()[3] & 0x0f);
+                // And the proxy still receives.
+                assertTrue((queryUdp(query)[2] & 2) != 0);
+            } finally {
+                release.countDown();
+            }
+            assertEquals(2, upstream.udpQueries.get());
+        }
+    }
+
     @Test
     public void truncatedUdpCanRetryOverTcpAndReceiveFullPlainDnsAnswer() throws Exception {
         byte[] query = plainQuery();

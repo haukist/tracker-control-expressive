@@ -60,6 +60,8 @@ public class DnsProxyServer {
     private DatagramSocket serverSocket;
     private ServerSocket tcpServerSocket;
     private ThreadPoolExecutor executor;
+    /** For names Tailscale may answer, so that neither kind of name waits for the other. */
+    private ThreadPoolExecutor localExecutor;
     // Tracked so stop() can wait for the listeners to actually exit, rather
     // than just closing their sockets and returning immediately.
     private Thread udpListenerThread;
@@ -67,6 +69,7 @@ public class DnsProxyServer {
     private static final long LISTENER_JOIN_TIMEOUT_MS = 2000;
     private static final int REQUEST_WORKERS = 16;
     private static final int REQUEST_QUEUE_CAPACITY = 64;
+    private static final int LOCAL_WORKERS = 2;
     private final AtomicInteger overloadDrops = new AtomicInteger(0);
     // Trips after this many consecutive failed network attempts (not queries):
     // a single failing resolve burns up to three full timeout budgets, so a
@@ -105,13 +108,25 @@ public class DnsProxyServer {
         }
     }
 
-    interface LocalResolver { byte[] resolve(byte[] query); }
+    interface LocalResolver {
+        /** The local answer, or null for an ordinary name. May call into the engine. */
+        byte[] resolve(byte[] query);
+        /** False only if resolve would return null. Must not block. */
+        default boolean mayAnswer(byte[] query) { return true; }
+    }
     interface PlainDnsServers { List<InetSocketAddress> get(); }
     private final LocalResolver localResolver;
     private final PlainDnsServers plainDnsServers;
 
     private DnsProxyServer(Context context) {
-        this(context, net.kollnig.missioncontrol.tailscale.TailscaleManager::resolveDNS);
+        this(context, new LocalResolver() {
+            @Override public byte[] resolve(byte[] query) {
+                return net.kollnig.missioncontrol.tailscale.TailscaleManager.resolveDNS(query);
+            }
+            @Override public boolean mayAnswer(byte[] query) {
+                return net.kollnig.missioncontrol.tailscale.TailscaleManager.mayResolveDNS(query);
+            }
+        });
     }
 
     DnsProxyServer(Context context, LocalResolver localResolver) {
@@ -183,6 +198,7 @@ public class DnsProxyServer {
             // Bound the waiting work as well: a dead endpoint must not retain
             // an unlimited number of DNS packets and accepted TCP sockets.
             executor = createRequestExecutor(REQUEST_WORKERS, REQUEST_QUEUE_CAPACITY);
+            localExecutor = createRequestExecutor(LOCAL_WORKERS, REQUEST_QUEUE_CAPACITY);
             overloadDrops.set(0);
 
             // Start the main listener thread
@@ -252,6 +268,10 @@ public class DnsProxyServer {
                 if (task instanceof TcpConnectionTask)
                     ((TcpConnectionTask) task).discard();
             executor = null;
+        }
+        if (localExecutor != null) {
+            localExecutor.shutdownNow();
+            localExecutor = null;
         }
 
         // Also reset the DoH client to close idle HTTPS connections
@@ -331,7 +351,9 @@ public class DnsProxyServer {
      * Call this from ServiceSinkhole.reload() to handle settings changes.
      */
     public synchronized void checkAndUpdateState() {
-        plainServers = null; // The network or the DNS settings may have changed.
+        // The network or the DNS settings may have changed.
+        plainServersReloads.incrementAndGet();
+        plainServers = null;
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
         boolean dohEnabled = prefs.getBoolean("doh_enabled", false) || prefs.getBoolean("ts_enabled", false);
 
@@ -370,37 +392,57 @@ public class DnsProxyServer {
                 final InetAddress clientAddress = request.getAddress();
                 final int clientPort = request.getPort();
 
-                // A Tailnet name is answered from memory, so answer it here.
-                // Queued behind the workers it would fail together with
-                // ordinary names whenever those all wait for an upstream
-                // resolver that does not respond.
-                byte[] local = resolveLocally(queryData);
-                if (local != null) {
-                    serverSocket.send(new DatagramPacket(local, local.length, clientAddress, clientPort));
-                    continue;
-                }
+                // A name Tailscale may answer has workers of its own. Queued
+                // behind the ordinary ones it would fail together with them
+                // whenever those all wait for an upstream resolver that does
+                // not respond; and answered on this thread, an engine that
+                // stalls would stop all of the device's DNS.
+                boolean local = isLocalCandidate(queryData);
 
                 // Handle the query in a separate thread. Overload gets an
                 // immediate SERVFAIL instead of retaining stale work while
                 // every worker waits on the same failed DoH endpoint.
-                if (!tryExecute(executor,
-                        () -> handleQuery(queryData, clientAddress, clientPort)))
+                if (!tryExecute(local ? localExecutor : executor, local
+                        ? () -> handleLocalCandidate(queryData, clientAddress, clientPort)
+                        : () -> handleQuery(queryData, clientAddress, clientPort)))
                     rejectUdpQuery(queryData, clientAddress, clientPort);
 
             } catch (IOException e) {
                 if (running.get()) {
                     Log.e(TAG, "Error receiving DNS query: " + e.getMessage());
                 }
+            } catch (RuntimeException e) {
+                // One query must not end the only thread that receives them.
+                Log.e(TAG, "Error dispatching DNS query: " + e);
             }
         }
     }
 
-    /** The Tailscale answer for query, or null if it is an ordinary name. */
-    @Nullable
-    private byte[] resolveLocally(byte[] queryData) {
-        if (!isPlausibleDnsQuery(queryData)) return null;
+    /** Whether Tailscale may answer query. Decided without calling into the engine. */
+    private boolean isLocalCandidate(byte[] queryData) {
+        if (!isPlausibleDnsQuery(queryData)) return false;
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
-        return prefs.getBoolean("ts_enabled", false) ? localResolver.resolve(queryData) : null;
+        return prefs.getBoolean("ts_enabled", false) && localResolver.mayAnswer(queryData);
+    }
+
+    /** Answers query from Tailscale, or hands it on if it is an ordinary name after all. */
+    private void handleLocalCandidate(byte[] queryData, InetAddress clientAddress, int clientPort) {
+        try {
+            byte[] response = localResolver.resolve(queryData);
+            if (response != null) {
+                DatagramSocket socket = serverSocket;
+                if (socket != null && !socket.isClosed())
+                    socket.send(new DatagramPacket(response, response.length, clientAddress, clientPort));
+                return;
+            }
+        } catch (Exception e) {
+            // Not to the upstream resolver: the name may belong to the tailnet.
+            Log.e(TAG, "Tailscale DNS failed: " + e);
+            rejectUdpQuery(queryData, clientAddress, clientPort);
+            return;
+        }
+        if (!tryExecute(executor, () -> handleQuery(queryData, clientAddress, clientPort)))
+            rejectUdpQuery(queryData, clientAddress, clientPort);
     }
 
     private static final long PLAIN_SERVERS_MAX_AGE_NANOS = TimeUnit.SECONDS.toNanos(2);
@@ -412,6 +454,7 @@ public class DnsProxyServer {
     }
 
     private volatile PlainServers plainServers;
+    private final AtomicInteger plainServersReloads = new AtomicInteger();
 
     /**
      * The resolvers for plain DNS. Looking them up asks ConnectivityManager,
@@ -422,8 +465,10 @@ public class DnsProxyServer {
     private List<InetSocketAddress> plainServers() {
         PlainServers current = plainServers;
         if (current == null || System.nanoTime() - current.loaded > PLAIN_SERVERS_MAX_AGE_NANOS) {
+            int reloads = plainServersReloads.get();
             current = new PlainServers(plainDnsServers.get());
-            plainServers = current;
+            // A list read while a reload happened may be the old network's: use it once, do not keep it.
+            if (reloads == plainServersReloads.get()) plainServers = current;
         }
         return current.servers;
     }
