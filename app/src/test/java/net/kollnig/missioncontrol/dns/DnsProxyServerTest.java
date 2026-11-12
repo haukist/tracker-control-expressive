@@ -407,6 +407,24 @@ public class DnsProxyServerTest {
         }
     }
 
+    /** A name Tailscale turns down goes upstream without being offered to it again. */
+    @Test
+    public void declinedTailnetCandidateIsResolvedLocallyOnlyOnce() throws Exception {
+        byte[] query = plainQuery();
+        AtomicInteger asked = new AtomicInteger();
+        try (PlainUpstream upstream = new PlainUpstream(query, largeAnswer(query))) {
+            proxy = new DnsProxyServer(RuntimeEnvironment.getApplication(), ignored -> {
+                asked.incrementAndGet();
+                return null;
+            }, () -> Collections.singletonList(upstream.address()));
+            prefs.edit().putBoolean("ts_enabled", true).putBoolean("doh_enabled", false).commit();
+            proxy.start();
+            assertTrue((queryUdp(query)[2] & 2) != 0);
+            assertEquals(1, upstream.udpQueries.get());
+            assertEquals(1, asked.get());
+        }
+    }
+
     @Test
     public void truncatedUdpCanRetryOverTcpAndReceiveFullPlainDnsAnswer() throws Exception {
         byte[] query = plainQuery();

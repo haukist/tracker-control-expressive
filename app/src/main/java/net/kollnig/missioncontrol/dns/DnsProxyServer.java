@@ -404,7 +404,7 @@ public class DnsProxyServer {
                 // every worker waits on the same failed DoH endpoint.
                 if (!tryExecute(local ? localExecutor : executor, local
                         ? () -> handleLocalCandidate(queryData, clientAddress, clientPort)
-                        : () -> handleQuery(queryData, clientAddress, clientPort)))
+                        : () -> handleQuery(queryData, clientAddress, clientPort, true)))
                     rejectUdpQuery(queryData, clientAddress, clientPort);
 
             } catch (IOException e) {
@@ -441,7 +441,8 @@ public class DnsProxyServer {
             rejectUdpQuery(queryData, clientAddress, clientPort);
             return;
         }
-        if (!tryExecute(executor, () -> handleQuery(queryData, clientAddress, clientPort)))
+        // Tailscale has declined the name: do not ask it a second time.
+        if (!tryExecute(executor, () -> handleQuery(queryData, clientAddress, clientPort, false)))
             rejectUdpQuery(queryData, clientAddress, clientPort);
     }
 
@@ -508,9 +509,11 @@ public class DnsProxyServer {
     }
 
     /**
-     * Handle a single DNS query by forwarding it via DoH.
+     * Handle a single DNS query: Tailscale first where askLocalResolver says
+     * it has not been asked yet, then plain DNS or DoH.
      */
-    private void handleQuery(byte[] queryData, InetAddress clientAddress, int clientPort) {
+    private void handleQuery(byte[] queryData, InetAddress clientAddress, int clientPort,
+                             boolean askLocalResolver) {
         try {
             // Malformed datagrams are dropped silently rather than answered:
             // a query shorter than a 12-byte DNS header has no transaction ID
@@ -525,7 +528,7 @@ public class DnsProxyServer {
             SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
             byte[] responseData = null;
 
-            if (prefs.getBoolean("ts_enabled", false))
+            if (askLocalResolver && prefs.getBoolean("ts_enabled", false))
                 responseData = localResolver.resolve(queryData);
             boolean plainDns = !prefs.getBoolean("doh_enabled", false);
             if (responseData == null && plainDns) responseData = resolveViaStandardDns(queryData);
