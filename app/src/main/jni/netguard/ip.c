@@ -245,6 +245,12 @@ static void reject_oversized_tailscale_packet(const struct arguments *args,
                                               int version, int protocol,
                                               const uint8_t *pkt, const uint8_t *payload,
                                               size_t length) {
+    // handle_ip()'s extension header walk stops at a Fragment header and
+    // leaves payload on it. Only the first fragment is answered, as for IPv4.
+    if (version == 6 && protocol == IPPROTO_FRAGMENT &&
+        (payload < pkt || (size_t) (payload - pkt) > length ||
+         tailscale_ipv6_later_fragment(payload, length - (size_t) (payload - pkt))))
+        return;
     static struct tailscale_too_big_limit limits[TAILSCALE_TOO_BIG_SLOTS];
     uint8_t answer[TAILSCALE_TOO_BIG_MAX];
     write_tailscale_icmp_error(

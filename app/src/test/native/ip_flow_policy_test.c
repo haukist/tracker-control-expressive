@@ -808,6 +808,25 @@ static void test_tailscale_oversized_packet_gets_too_big(void) {
           "an oversized Tailnet IPv6 packet is answered with packet too big");
     answers = tun_writes;
 
+    // An oversized IPv6 fragment is answered only if it is the first one.
+    struct ip6_hdr *fragmented = (struct ip6_hdr *) packet6;
+    memset(packet6, 0, sizeof(struct ip6_hdr) + 8);
+    fragmented->ip6_vfc = 0x60;
+    fragmented->ip6_nxt = IPPROTO_FRAGMENT;
+    fragmented->ip6_plen = htons(1400);
+    inet_pton(AF_INET6, "2001:db8::10", &fragmented->ip6_src);
+    inet_pton(AF_INET6, "fd7a:115c:a1e0::3", &fragmented->ip6_dst);
+    uint8_t *fragment = packet6 + sizeof(struct ip6_hdr);
+    fragment[0] = IPPROTO_UDP;
+    fragment[3] = 0x08; // offset 1: not the first fragment
+    run(packet6, sizeof(struct ip6_hdr) + 1400);
+    CHECK(tun_writes == answers, "a later oversized IPv6 fragment gets no answer");
+    fragment[3] = 0x01; // offset 0, more fragments follow
+    run(packet6, sizeof(struct ip6_hdr) + 1400);
+    CHECK(tun_writes == answers + 1 && last_tun_write[40] == 2,
+          "the first oversized IPv6 fragment is answered with packet too big");
+    answers = tun_writes;
+
     // The policy still decides first: a blocked flow gets no answer at all.
     policy_allowed = 0;
     length = make_udp(packet, 43021, payload, sizeof(payload));

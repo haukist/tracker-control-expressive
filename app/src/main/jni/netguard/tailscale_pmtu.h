@@ -134,6 +134,13 @@ static inline int tailscale_ipv6_answerable(const uint8_t *packet, size_t length
            memcmp(packet + 24, unspecified, 16) != 0;
 }
 
+// Whether header, the IPv6 Fragment extension header of a packet with
+// available bytes from there on, belongs to a fragment other than the first.
+// Such a fragment carries no upper-layer header and is never answered.
+static inline int tailscale_ipv6_later_fragment(const uint8_t *header, size_t available) {
+    return available < 8 || (header[2] != 0 || (header[3] & 0xf8) != 0);
+}
+
 // Builds "no route to destination" for an IPv6 packet that is dropped because
 // ordinary IPv6 is switched off while the overlay keeps an IPv6 address on the
 // interface. Without an answer the sender waits for a timeout before it falls
@@ -157,6 +164,10 @@ static inline size_t tailscale_too_big(const uint8_t *packet, size_t length,
 
     if ((packet[0] >> 4) == 4) {
         if (length < 20 || (packet[6] & 0x1f) != 0 || packet[7] != 0)
+            return 0;
+        // RFC 1122 3.2.2: no error about a packet whose source is not one
+        // host (0.0.0.0/8, multicast, class E and limited broadcast).
+        if (packet[12] == 0 || packet[12] >= 224)
             return 0;
         size_t quoted = length;
         if (quoted > TAILSCALE_ICMP4_MAX - 28)
@@ -184,9 +195,15 @@ static inline size_t tailscale_too_big(const uint8_t *packet, size_t length,
         return total;
     }
 
-    if ((packet[0] >> 4) == 6)
+    if ((packet[0] >> 4) == 6) {
+        // RFC 4443 2.4(e) lets "packet too big" answer a packet sent to a
+        // multicast address, but the overlay has none, and the answer still
+        // needs a source it can be sent to.
+        if (!tailscale_ipv6_answerable(packet, length))
+            return 0;
         return tailscale_icmp6_error(packet, length, 2 /* packet too big */, 0,
                                      TAILSCALE_MTU, out, out_size);
+    }
 
     return 0;
 }

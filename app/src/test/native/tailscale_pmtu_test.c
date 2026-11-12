@@ -56,6 +56,15 @@ int main(void) {
     assert(checksum_ok(0, out, 20));
     assert(checksum_ok(0, out + 20, length - 20));
 
+    // No error about a packet whose source is not a single host.
+    packet[12] = 0;
+    assert(tailscale_too_big(packet, 1500, 0, out, sizeof(out)) == 0);
+    packet[12] = 224;
+    assert(tailscale_too_big(packet, 1500, 0, out, sizeof(out)) == 0);
+    packet[12] = 255;
+    assert(tailscale_too_big(packet, 1500, 0, out, sizeof(out)) == 0);
+    packet[12] = 100;
+
     // Only the first fragment of an oversized datagram is answered.
     packet[7] = 185;
     assert(tailscale_too_big(packet, 1500, 0, out, sizeof(out)) == 0);
@@ -73,6 +82,23 @@ int main(void) {
     assert(memcmp(out + 48, packet, length - 48) == 0);
     uint32_t pseudo = tailscale_sum16(0, out + 8, 32) + (uint32_t) (length - 40) + 58;
     assert(checksum_ok(pseudo, out + 40, length - 40));
+
+    // Nor about an IPv6 packet from :: or from a multicast address.
+    fill_ipv6(packet, 1500);
+    memset(packet + 8, 0, 16);
+    assert(tailscale_too_big(packet, 1500, 0, out, sizeof(out)) == 0);
+    fill_ipv6(packet, 1500);
+    packet[8] = 0xff;
+    assert(tailscale_too_big(packet, 1500, 0, out, sizeof(out)) == 0);
+
+    // IPv6 Fragment header: only offset zero is a first fragment.
+    const uint8_t first_fragment[8] = {17, 0, 0x00, 0x01, 1, 2, 3, 4}; // M flag only
+    const uint8_t later_fragment[8] = {17, 0, 0x00, 0x08, 1, 2, 3, 4}; // offset 1
+    const uint8_t far_fragment[8] = {17, 0, 0x05, 0x00, 1, 2, 3, 4};
+    assert(!tailscale_ipv6_later_fragment(first_fragment, 8));
+    assert(tailscale_ipv6_later_fragment(later_fragment, 8));
+    assert(tailscale_ipv6_later_fragment(far_fragment, 8));
+    assert(tailscale_ipv6_later_fragment(first_fragment, 7)); // truncated header
 
     // An answer stays capped at its protocol's maximum size.
     fill_ipv6(packet, 1281);
