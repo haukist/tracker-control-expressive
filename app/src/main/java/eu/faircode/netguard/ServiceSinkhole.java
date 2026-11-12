@@ -704,8 +704,13 @@ public class ServiceSinkhole extends VpnService {
 
                     case tailscale_logout:
                         if (vpn != null) stopNative(vpn);
-                        net.kollnig.missioncontrol.tailscale.TailscaleManager.logout(ServiceSinkhole.this);
-                        if (vpn != null) reload(false);
+                        try {
+                            net.kollnig.missioncontrol.tailscale.TailscaleManager.logout(ServiceSinkhole.this);
+                        } finally {
+                            // Also when the erase failed: the native loop was
+                            // stopped above and nothing else would restart it.
+                            if (vpn != null) reload(false);
+                        }
                         break;
 
                     case run:
