@@ -331,6 +331,7 @@ public class DnsProxyServer {
      * Call this from ServiceSinkhole.reload() to handle settings changes.
      */
     public synchronized void checkAndUpdateState() {
+        plainServers = null; // The network or the DNS settings may have changed.
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
         boolean dohEnabled = prefs.getBoolean("doh_enabled", false) || prefs.getBoolean("ts_enabled", false);
 
@@ -369,6 +370,16 @@ public class DnsProxyServer {
                 final InetAddress clientAddress = request.getAddress();
                 final int clientPort = request.getPort();
 
+                // A Tailnet name is answered from memory, so answer it here.
+                // Queued behind the workers it would fail together with
+                // ordinary names whenever those all wait for an upstream
+                // resolver that does not respond.
+                byte[] local = resolveLocally(queryData);
+                if (local != null) {
+                    serverSocket.send(new DatagramPacket(local, local.length, clientAddress, clientPort));
+                    continue;
+                }
+
                 // Handle the query in a separate thread. Overload gets an
                 // immediate SERVFAIL instead of retaining stale work while
                 // every worker waits on the same failed DoH endpoint.
@@ -382,6 +393,39 @@ public class DnsProxyServer {
                 }
             }
         }
+    }
+
+    /** The Tailscale answer for query, or null if it is an ordinary name. */
+    @Nullable
+    private byte[] resolveLocally(byte[] queryData) {
+        if (!isPlausibleDnsQuery(queryData)) return null;
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
+        return prefs.getBoolean("ts_enabled", false) ? localResolver.resolve(queryData) : null;
+    }
+
+    private static final long PLAIN_SERVERS_MAX_AGE_NANOS = TimeUnit.SECONDS.toNanos(2);
+
+    private static final class PlainServers {
+        final List<InetSocketAddress> servers;
+        final long loaded = System.nanoTime();
+        PlainServers(List<InetSocketAddress> servers) { this.servers = servers; }
+    }
+
+    private volatile PlainServers plainServers;
+
+    /**
+     * The resolvers for plain DNS. Looking them up asks ConnectivityManager,
+     * which is too much for every query once all of the device's DNS passes
+     * here. A reload (every network change causes one) drops the cached list,
+     * and it is short-lived besides.
+     */
+    private List<InetSocketAddress> plainServers() {
+        PlainServers current = plainServers;
+        if (current == null || System.nanoTime() - current.loaded > PLAIN_SERVERS_MAX_AGE_NANOS) {
+            current = new PlainServers(plainDnsServers.get());
+            plainServers = current;
+        }
+        return current.servers;
     }
 
     static ThreadPoolExecutor createRequestExecutor(int workers, int queueCapacity) {
@@ -701,7 +745,7 @@ public class DnsProxyServer {
 
     @Nullable
     private byte[] resolveViaStandardDns(byte[] queryData, boolean tcp) {
-        List<InetSocketAddress> dnsServers = plainDnsServers.get();
+        List<InetSocketAddress> dnsServers = plainServers();
         if (dnsServers.isEmpty()) {
             Log.w(TAG, "No fallback DNS servers available");
             return null;

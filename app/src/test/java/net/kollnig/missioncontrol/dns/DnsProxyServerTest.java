@@ -328,6 +328,41 @@ public class DnsProxyServerTest {
         assertFalse(proxy.isRunning());
     }
 
+    /** Ordinary names stuck on a silent upstream must not delay a Tailnet name. */
+    @Test
+    public void tailnetNamesAreAnsweredWhileEveryWorkerWaitsForUpstream() throws Exception {
+        byte[] tailnetQuery = QUERY.clone();
+        tailnetQuery[1] = 0x7f;
+        byte[] tailnetAnswer = RESPONSE.clone();
+        tailnetAnswer[1] = 0x7f;
+        AtomicInteger lookups = new AtomicInteger();
+        // A bound socket that never answers: every plain lookup runs into its timeout.
+        try (DatagramSocket silent = new DatagramSocket(0, InetAddress.getByName("127.0.0.1"))) {
+            proxy = new DnsProxyServer(RuntimeEnvironment.getApplication(),
+                    query -> query[1] == 0x7f ? tailnetAnswer.clone() : null,
+                    () -> {
+                        lookups.incrementAndGet();
+                        return Collections.singletonList(
+                                new InetSocketAddress(silent.getLocalAddress(), silent.getLocalPort()));
+                    });
+            prefs.edit().putBoolean("ts_enabled", true).putBoolean("doh_enabled", false).commit();
+            proxy.start();
+            try (DatagramSocket ordinary = new DatagramSocket()) {
+                // More ordinary queries than there are workers.
+                for (int i = 0; i < 24; i++)
+                    ordinary.send(new DatagramPacket(QUERY, QUERY.length,
+                            InetAddress.getByName(DnsProxyServer.DNS_PROXY_ADDRESS),
+                            DnsProxyServer.DNS_PROXY_PORT));
+                long started = System.nanoTime();
+                assertArrayEquals(tailnetAnswer, queryUdp(tailnetQuery));
+                long millis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+                assertTrue("Tailnet answer waited " + millis + " ms behind ordinary names", millis < 2000);
+            }
+            // The resolver list is not looked up again for every query.
+            assertTrue("looked the resolvers up " + lookups.get() + " times", lookups.get() <= 2);
+        }
+    }
+
     @Test
     public void truncatedUdpCanRetryOverTcpAndReceiveFullPlainDnsAnswer() throws Exception {
         byte[] query = plainQuery();
