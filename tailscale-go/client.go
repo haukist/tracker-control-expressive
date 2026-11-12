@@ -100,7 +100,8 @@ func startBackend(stateDir, hostname string) (_ *Client, err error) {
 		return nil, err
 	}
 	// setenv is not safe against getenv on another thread, and this process
-	// has many. The directory never changes, so write it once only.
+	// has many. The directory never changes, so write it once only: the
+	// first start still writes, a restart no longer does.
 	if os.Getenv("TS_LOGS_DIR") != logsDir {
 		if err := os.Setenv("TS_LOGS_DIR", logsDir); err != nil {
 			return nil, err
