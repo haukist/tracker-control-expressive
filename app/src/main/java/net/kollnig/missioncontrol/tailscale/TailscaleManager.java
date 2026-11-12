@@ -46,7 +46,8 @@ public final class TailscaleManager {
     private static ExecutorService networkExecutor;
     private static FileOutputStream output;
     private static ParcelFileDescriptor inputDescriptor;
-    private static Thread inputThread, replyThread, eventThread;
+    private static volatile Thread inputThread;
+    private static Thread replyThread, eventThread;
 
     private TailscaleManager() {}
 
@@ -169,9 +170,12 @@ public final class TailscaleManager {
                 }
             } catch (IOException ignored) { }
             finally {
-                // detach() joins this reader before a replacement can attach.
-                bridgeAttached = false;
-                notifyListeners();
+                // detach() gives up on a reader that does not end; one that
+                // ends after its replacement attached must leave that alone.
+                if (inputThread == Thread.currentThread()) {
+                    bridgeAttached = false;
+                    notifyListeners();
+                }
             }
         }, "Tailscale approved packets");
         bridgeAttached = true;
