@@ -49,6 +49,42 @@ public class TailscaleNetworkCallbackTest {
     }
 
     @Test
+    public void linkChangesTheEngineCannotSeeDoNotNotify() throws Exception {
+        Queue<Runnable> work = new ArrayDeque<>();
+        TailscaleNetworkCallback callback = new TailscaleNetworkCallback(work::add, () -> { });
+        Network network = ShadowNetwork.newInstance(12);
+        LinkProperties link = new LinkProperties();
+        link.setInterfaceName("wlan0");
+        addAddress(link, "192.0.2.10", 24);
+        callback.onLinkPropertiesChanged(network, link);
+        work.remove().run();
+
+        // Properties the engine is never told about.
+        link.setDomains("lan");
+        link.setHttpProxy(android.net.ProxyInfo.buildDirectProxy("proxy.example", 8080));
+        callback.onLinkPropertiesChanged(network, link);
+        assertTrue(work.isEmpty());
+
+        // A new address or interface is something the engine acts on.
+        addAddress(link, "2001:db8::10", 64);
+        callback.onLinkPropertiesChanged(network, link);
+        assertEquals(1, work.size());
+        work.remove().run();
+        link.setInterfaceName("wlan1");
+        callback.onLinkPropertiesChanged(network, link);
+        assertEquals(1, work.size());
+        callback.close();
+    }
+
+    private static void addAddress(LinkProperties link, String address, int prefix) throws Exception {
+        android.net.LinkAddress linkAddress = ReflectionHelpers.callConstructor(android.net.LinkAddress.class,
+                ReflectionHelpers.ClassParameter.from(InetAddress.class, InetAddress.getByName(address)),
+                ReflectionHelpers.ClassParameter.from(int.class, prefix));
+        ReflectionHelpers.callInstanceMethod(link, "addLinkAddress",
+                ReflectionHelpers.ClassParameter.from(android.net.LinkAddress.class, linkAddress));
+    }
+
+    @Test
     public void validationChangesNotifyButBandwidthUpdatesDoNot() {
         Queue<Runnable> work = new ArrayDeque<>();
         TailscaleNetworkCallback callback = new TailscaleNetworkCallback(work::add, () -> { });

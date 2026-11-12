@@ -1,10 +1,10 @@
 package net.kollnig.missioncontrol.tailscale;
 
 import android.net.ConnectivityManager;
+import android.net.LinkAddress;
 import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
-import android.os.Parcel;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -15,7 +15,7 @@ import java.util.concurrent.RejectedExecutionException;
 final class TailscaleNetworkCallback extends ConnectivityManager.NetworkCallback {
     private final Executor executor;
     private final Runnable changed;
-    private final Map<Network, LinkProperties> links = new HashMap<>();
+    private final Map<Network, String> links = new HashMap<>();
     private final Map<Network, Integer> capabilities = new HashMap<>();
     private boolean pending;
     private boolean closed;
@@ -34,16 +34,29 @@ final class TailscaleNetworkCallback extends ConnectivityManager.NetworkCallback
     }
 
     @Override public synchronized void onLinkPropertiesChanged(Network network, LinkProperties link) {
-        if (closed || link.equals(links.get(network))) return;
-        Parcel parcel = Parcel.obtain();
-        try {
-            link.writeToParcel(parcel, 0);
-            parcel.setDataPosition(0);
-            links.put(network, LinkProperties.CREATOR.createFromParcel(parcel));
-        } finally {
-            parcel.recycle();
-        }
+        String relevant = relevant(link);
+        if (closed || relevant.equals(links.get(network))) return;
+        links.put(network, relevant);
         schedule();
+    }
+
+    /**
+     * The part of a link that matters to the engine: its interface, MTU and
+     * addresses (what TailscalePlatform reports) and its DNS servers. A whole
+     * LinkProperties also differs when only a route or an address lifetime
+     * changes, which every IPv6 router advertisement does, also with the
+     * screen off; each such wake-up costs an interface enumeration and a call
+     * into Go for nothing the engine could see.
+     */
+    static String relevant(LinkProperties link) {
+        java.util.List<String> addresses = new java.util.ArrayList<>();
+        for (LinkAddress address : link.getLinkAddresses())
+            addresses.add(address.getAddress().getHostAddress() + "/" + address.getPrefixLength());
+        java.util.Collections.sort(addresses);
+        java.util.List<String> dns = new java.util.ArrayList<>();
+        for (java.net.InetAddress server : link.getDnsServers()) dns.add(server.getHostAddress());
+        int mtu = android.os.Build.VERSION.SDK_INT >= 29 ? link.getMtu() : 0;
+        return link.getInterfaceName() + " " + mtu + " " + addresses + " " + dns;
     }
 
     @Override public synchronized void onCapabilitiesChanged(Network network, NetworkCapabilities caps) {
