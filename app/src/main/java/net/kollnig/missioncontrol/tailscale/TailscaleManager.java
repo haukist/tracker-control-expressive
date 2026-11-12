@@ -29,11 +29,15 @@ public final class TailscaleManager {
     private static final Object LIFE = new Object();
     private static final Object OUTPUT = new Object();
     private static final Object PENDING_STOPS = new Object();
+    /** Guards client against the state its threads publish; never held across a call into Go. */
+    private static final Object STATE = new Object();
     private static final String TAG = "TrackerControl.Tailscale";
     private static int pendingStops;
     private static final int PACKET_BUFFER = 2048;
     /** How long stop() and detach() wait for one bridge thread. Changed only by tests. */
     static long threadWaitMillis = 5_000;
+    /** The same wait on the main thread (Service.onDestroy). Changed only by tests. */
+    static long destroyWaitMillis = 500;
     /** How long start() waits for an engine that is still shutting down. Changed only by tests. */
     static long stopWaitMillis = 30_000;
     private static final Set<Runnable> listeners = new CopyOnWriteArraySet<>();
@@ -72,6 +76,13 @@ public final class TailscaleManager {
         publish(new TailscaleSnapshot("Error", old.ipv4, old.ipv6, old.dnsSuffix, old.magicDNS, reason));
     }
 
+    /** A failure of source's own threads: ignored once that engine was stopped or replaced. */
+    private static void failure(Client source, String reason) {
+        synchronized (STATE) {
+            if (client == source) failure(reason);
+        }
+    }
+
     /** Called on the VPN command thread. Engine survives native-only/TUN reloads. */
     public static void start(VpnService service, Runnable reconfigure) {
         if (!awaitPendingStops()) {
@@ -87,7 +98,7 @@ public final class TailscaleManager {
                 TailscalePlatform platform = new TailscalePlatform(service);
                 Client created = Tailscalebridge.new_(stateDirectory(service).getAbsolutePath(),
                         "trackercontrol-android", platform);
-                client = created;
+                synchronized (STATE) { client = created; }
                 readStatus(created, reconfigure);
                 replyThread = new Thread(() -> receiveReplies(created), "Tailscale replies");
                 replyThread.start();
@@ -98,7 +109,7 @@ public final class TailscaleManager {
                             if (client == created) readStatus(created, reconfigure);
                         }
                     } catch (Exception ignored) {
-                        if (client == created) failure("Tailscale event stream stopped");
+                        failure(created, "Tailscale event stream stopped");
                     }
                 }, "Tailscale state");
                 eventThread.start();
@@ -121,9 +132,17 @@ public final class TailscaleManager {
     private static void readStatus(Client source, Runnable reconfigure) throws Exception {
         String json = source.statusJSON();
         TailscaleSnapshot next = TailscaleSnapshot.parse(json);
-        boolean addressesChanged = !next.hasSameVpnConfiguration(snapshot);
-        loginUrl = new JSONObject(json).optString("authURL", "");
-        publish(next);
+        String url = new JSONObject(json).optString("authURL", "");
+        boolean addressesChanged;
+        synchronized (STATE) {
+            // A status read while stop() ran must not replace the stopped
+            // state. A reload asked for just before stop() can still follow
+            // it; the reload reads the settings anew and is harmless then.
+            if (client != source) return;
+            addressesChanged = !next.hasSameVpnConfiguration(snapshot);
+            loginUrl = url;
+            publish(next);
+        }
         if (addressesChanged) reconfigure.run();
     }
 
@@ -195,19 +214,23 @@ public final class TailscaleManager {
                 }
             }
         } catch (Exception ignored) {
-            if (client == source) failure("Tailscale packet stream stopped");
+            failure(source, "Tailscale packet stream stopped");
         }
     }
 
     /** C must shutdown its socketpair writer before detaching, which wakes input.read. */
     public static void detach() {
+        detach(threadWaitMillis);
+    }
+
+    private static void detach(long waitMillis) {
         bridgeAttached = false;
         notifyListeners();
         synchronized (OUTPUT) {
             if (output != null) try { output.close(); } catch (IOException ignored) { }
             output = null;
         }
-        join(inputThread);
+        join(inputThread, waitMillis);
         inputThread = null;
         if (inputDescriptor != null) try { inputDescriptor.close(); } catch (IOException ignored) { }
         inputDescriptor = null;
@@ -216,7 +239,7 @@ public final class TailscaleManager {
     public static void stop() {
         synchronized (LIFE) {
             Client previous = client;
-            client = null;
+            synchronized (STATE) { client = null; }
             if (networkCallback != null) networkCallback.close();
             if (connectivity != null && networkCallback != null)
                 try { connectivity.unregisterNetworkCallback(networkCallback); } catch (RuntimeException ignored) { }
@@ -231,8 +254,10 @@ public final class TailscaleManager {
             join(eventThread);
             replyThread = null;
             eventThread = null;
-            loginUrl = "";
-            publish(TailscaleSnapshot.stopped());
+            synchronized (STATE) {
+                loginUrl = "";
+                publish(TailscaleSnapshot.stopped());
+            }
         }
     }
 
@@ -266,11 +291,13 @@ public final class TailscaleManager {
      * Only the engine shutdown is asynchronous. shutdownNativeWriter and
      * detach() run here and must return promptly: shutdownNativeWriter has
      * to shut the native end of the packet bridge down, which wakes the
-     * packet reader that detach() waits for.
+     * packet reader that detach() waits for. That wait is kept well below
+     * what the system tolerates on the main thread; a reader that is still
+     * busy then ends on its own once its descriptor is closed.
      */
     public static void destroy(Runnable shutdownNativeWriter) {
         shutdownNativeWriter.run();
-        detach();
+        detach(destroyWaitMillis);
         stopAsync();
     }
 
@@ -305,9 +332,13 @@ public final class TailscaleManager {
      * threads ends by itself once its client is closed or replaced.
      */
     private static void join(Thread thread) {
+        join(thread, threadWaitMillis);
+    }
+
+    private static void join(Thread thread, long waitMillis) {
         if (thread == null || thread == Thread.currentThread()) return;
         boolean interrupted = false;
-        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(threadWaitMillis);
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(waitMillis);
         while (thread.isAlive()) {
             long remaining = deadline - System.nanoTime();
             if (remaining <= 0) {
