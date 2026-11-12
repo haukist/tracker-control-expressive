@@ -35,6 +35,7 @@ extern _Atomic int wg_required;
 static atomic_long wg_drop_count = 0;
 static atomic_long wg_gap_drop_count = 0;
 static atomic_long undispatchable_drop_count = 0;
+static atomic_long tailscale_unattributed_drop_count = 0;
 static atomic_long undispatchable_log_count = 0;
 
 // Skip tunneling for addresses WireGuard cannot meaningfully forward
@@ -245,12 +246,8 @@ static void reject_oversized_tailscale_packet(const struct arguments *args,
                                               int version, int protocol,
                                               const uint8_t *pkt, const uint8_t *payload,
                                               size_t length) {
-    // handle_ip()'s extension header walk stops at a Fragment header and
-    // leaves payload on it. Only the first fragment is answered, as for IPv4.
-    if (version == 6 && protocol == IPPROTO_FRAGMENT &&
-        (payload < pkt || (size_t) (payload - pkt) > length ||
-         tailscale_ipv6_later_fragment(payload, length - (size_t) (payload - pkt))))
-        return;
+    // No fragment gets here: handle_ip() drops every IPv4 fragment, and an
+    // IPv6 one has no owner and is dropped before the policy decision.
     static struct tailscale_too_big_limit limits[TAILSCALE_TOO_BIG_SLOTS];
     uint8_t answer[TAILSCALE_TOO_BIG_MAX];
     write_tailscale_icmp_error(
@@ -957,6 +954,25 @@ void handle_ip(const struct arguments *args,
     log_android(ANDROID_LOG_DEBUG,
                 "Packet v%d %s/%u > %s/%u proto %d flags %s uid %d",
                 version, source, sport, dest, dport, protocol, flags, uid);
+
+    // Overlay traffic is handed to the bridge raw, so the per-app decision is
+    // the only one it gets. Java allows a packet without an owner as unknown
+    // system traffic, which would let a blocked app through whenever its
+    // datagram cannot be attributed: an owner lookup that fails, or anything
+    // without ports to look up (an IPv6 fragment, ESP). Fail closed, as TCP
+    // does above; the next datagram retries the lookup. ICMP has no owner to
+    // find and DNS keeps its own path.
+    if (tailscale_dest && uid < 0 &&
+        ((tailscale_udp_policy && !reuse_tailscale_udp_verdict) ||
+         (protocol != IPPROTO_TCP && protocol != IPPROTO_UDP &&
+          protocol != IPPROTO_ICMP && protocol != IPPROTO_ICMPV6))) {
+        long drops = atomic_fetch_add_explicit(
+                &tailscale_unattributed_drop_count, 1, memory_order_relaxed) + 1;
+        if ((drops & 255) == 1)
+            log_android(ANDROID_LOG_WARN,
+                        "Tailnet packet without owner, proto %d; dropped %ld", protocol, drops);
+        return;
+    }
 
     // Check if allowed
     int allowed = 0;

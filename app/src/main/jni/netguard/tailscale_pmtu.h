@@ -134,13 +134,6 @@ static inline int tailscale_ipv6_answerable(const uint8_t *packet, size_t length
            memcmp(packet + 24, unspecified, 16) != 0;
 }
 
-// Whether header, the IPv6 Fragment extension header of a packet with
-// available bytes from there on, belongs to a fragment other than the first.
-// Such a fragment carries no upper-layer header and is never answered.
-static inline int tailscale_ipv6_later_fragment(const uint8_t *header, size_t available) {
-    return available < 8 || (header[2] != 0 || (header[3] & 0xf8) != 0);
-}
-
 // Builds "no route to destination" for an IPv6 packet that is dropped because
 // ordinary IPv6 is switched off while the overlay keeps an IPv6 address on the
 // interface. Without an answer the sender waits for a timeout before it falls

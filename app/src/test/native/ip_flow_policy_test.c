@@ -732,20 +732,24 @@ static void test_tailscale_udp_verdict_cache(void) {
     set_destination(packet, "100.64.1.2");
     run(packet, length);
     run(packet, length);
-    CHECK(policy_calls == 2 && uid_calls == 2 && tailscale_writes == 2,
-          "Tailnet UDP with an unknown owner is never pinned as allowed");
+    CHECK(policy_calls == 0 && uid_calls == 2 && tailscale_writes == 0,
+          "Tailnet UDP without an owner is dropped and the lookup retried");
+    configured_uid = 10042;
+    run(packet, length);
+    CHECK(policy_calls == 1 && uid_calls == 3 && tailscale_writes == 1,
+          "Tailnet UDP is forwarded once its owner resolves");
 
     // The cached verdict belongs to one five-tuple only.
     configured_uid = 10042;
     run(packet, length);
     run(packet, length);
-    CHECK(policy_calls == 3 && uid_calls == 3 && tailscale_writes == 4,
+    CHECK(policy_calls == 1 && uid_calls == 3 && tailscale_writes == 3,
           "Tailnet UDP is cached once its owner resolves");
     length = make_udp(packet, 43012, opaque, sizeof(opaque));
     set_destination(packet, "100.64.1.2");
     policy_allowed = 0;
     run(packet, length);
-    CHECK(policy_calls == 4 && tailscale_writes == 4 && blocked_udp_calls == 1,
+    CHECK(policy_calls == 2 && tailscale_writes == 3 && blocked_udp_calls == 1,
           "a different Tailnet UDP tuple does not inherit an allowed verdict");
     atomic_store(&wg_required, 1);
 }
@@ -808,7 +812,10 @@ static void test_tailscale_oversized_packet_gets_too_big(void) {
           "an oversized Tailnet IPv6 packet is answered with packet too big");
     answers = tun_writes;
 
-    // An oversized IPv6 fragment is answered only if it is the first one.
+    // An IPv6 fragment has no ports, so no owner: it is neither forwarded
+    // nor answered, whatever its size and position.
+    int forwarded = tailscale_writes;
+    int decided = policy_calls;
     struct ip6_hdr *fragmented = (struct ip6_hdr *) packet6;
     memset(packet6, 0, sizeof(struct ip6_hdr) + 8);
     fragmented->ip6_vfc = 0x60;
@@ -820,12 +827,12 @@ static void test_tailscale_oversized_packet_gets_too_big(void) {
     fragment[0] = IPPROTO_UDP;
     fragment[3] = 0x08; // offset 1: not the first fragment
     run(packet6, sizeof(struct ip6_hdr) + 1400);
-    CHECK(tun_writes == answers, "a later oversized IPv6 fragment gets no answer");
     fragment[3] = 0x01; // offset 0, more fragments follow
     run(packet6, sizeof(struct ip6_hdr) + 1400);
-    CHECK(tun_writes == answers + 1 && last_tun_write[40] == 2,
-          "the first oversized IPv6 fragment is answered with packet too big");
-    answers = tun_writes;
+    fragmented->ip6_plen = htons(200);
+    run(packet6, sizeof(struct ip6_hdr) + 200);
+    CHECK(tun_writes == answers && tailscale_writes == forwarded && policy_calls == decided,
+          "Tailnet IPv6 fragments are dropped without a policy call or an answer");
 
     // The policy still decides first: a blocked flow gets no answer at all.
     policy_allowed = 0;

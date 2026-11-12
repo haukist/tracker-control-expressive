@@ -91,15 +91,6 @@ int main(void) {
     packet[8] = 0xff;
     assert(tailscale_too_big(packet, 1500, 0, out, sizeof(out)) == 0);
 
-    // IPv6 Fragment header: only offset zero is a first fragment.
-    const uint8_t first_fragment[8] = {17, 0, 0x00, 0x01, 1, 2, 3, 4}; // M flag only
-    const uint8_t later_fragment[8] = {17, 0, 0x00, 0x08, 1, 2, 3, 4}; // offset 1
-    const uint8_t far_fragment[8] = {17, 0, 0x05, 0x00, 1, 2, 3, 4};
-    assert(!tailscale_ipv6_later_fragment(first_fragment, 8));
-    assert(tailscale_ipv6_later_fragment(later_fragment, 8));
-    assert(tailscale_ipv6_later_fragment(far_fragment, 8));
-    assert(tailscale_ipv6_later_fragment(first_fragment, 7)); // truncated header
-
     // An answer stays capped at its protocol's maximum size.
     fill_ipv6(packet, 1281);
     assert(tailscale_too_big(packet, 1281, 0, out, sizeof(out)) == TAILSCALE_MTU);
