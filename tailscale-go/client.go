@@ -99,8 +99,12 @@ func startBackend(stateDir, hostname string) (_ *Client, err error) {
 	if err := os.MkdirAll(logsDir, 0700); err != nil {
 		return nil, err
 	}
-	if err := os.Setenv("TS_LOGS_DIR", logsDir); err != nil {
-		return nil, err
+	// setenv is not safe against getenv on another thread, and this process
+	// has many. The directory never changes, so write it once only.
+	if os.Getenv("TS_LOGS_DIR") != logsDir {
+		if err := os.Setenv("TS_LOGS_DIR", logsDir); err != nil {
+			return nil, err
+		}
 	}
 	sys := tsd.NewSystem()
 	bus := sys.Bus.Get()
