@@ -35,6 +35,10 @@ final class TailscalePlatform implements tailscalebridge.Platform {
         JSONArray result = new JSONArray();
         Set<String> seen = new HashSet<>();
         for (Network network : connectivity.getAllNetworks()) {
+            // Not this app's own VPN: its addresses are no way to reach a peer,
+            // and they would be offered to the tailnet as endpoints.
+            NetworkCapabilities caps = connectivity.getNetworkCapabilities(network);
+            if (caps == null || caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue;
             LinkProperties link = connectivity.getLinkProperties(network);
             if (link == null || link.getInterfaceName() == null || !seen.add(link.getInterfaceName()))
                 continue;
@@ -44,7 +48,9 @@ final class TailscalePlatform implements tailscalebridge.Platform {
                 JSONObject entry = new JSONObject();
                 entry.put("name", iface.getName());
                 entry.put("index", iface.getIndex());
-                entry.put("mtu", android.os.Build.VERSION.SDK_INT >= 29 ? link.getMtu() : iface.getMTU());
+                // Zero means unknown to Go; a negative value would make it reject every interface.
+                entry.put("mtu", Math.max(0,
+                        android.os.Build.VERSION.SDK_INT >= 29 ? link.getMtu() : iface.getMTU()));
                 int flags = iface.isUp() ? 1 | 32 : 0; // Go FlagUp | FlagRunning
                 if (iface.isLoopback()) flags |= 4;
                 if (iface.isPointToPoint()) flags |= 8;
