@@ -18,6 +18,7 @@
 */
 
 #include "netguard.h"
+#include "tun_io.h"
 #include "dns_frame.h"
 
 extern char socks5_addr[INET6_ADDRSTRLEN + 1];
@@ -1829,7 +1830,7 @@ ssize_t write_tcp(const struct arguments *args, const struct tcp_session *cur,
                 ntohl(tcp->ack_seq) - cur->remote_start,
                 datalen);
 
-    ssize_t res = write(args->tun, buffer, len);
+    ssize_t res = write_tun_packet(args->tun, args->ctx ? args->ctx->pipefds[0] : -1, buffer, len);
 
     // Write pcap record
     if (res >= 0) {

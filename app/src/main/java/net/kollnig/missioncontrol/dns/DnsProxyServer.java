@@ -31,6 +31,7 @@ import java.net.Socket;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
@@ -104,8 +105,28 @@ public class DnsProxyServer {
         }
     }
 
+    interface LocalResolver { byte[] resolve(byte[] query); }
+    interface PlainDnsServers { List<InetSocketAddress> get(); }
+    private final LocalResolver localResolver;
+    private final PlainDnsServers plainDnsServers;
+
     private DnsProxyServer(Context context) {
+        this(context, net.kollnig.missioncontrol.tailscale.TailscaleManager::resolveDNS);
+    }
+
+    DnsProxyServer(Context context, LocalResolver localResolver) {
+        this(context, localResolver, null);
+    }
+
+    DnsProxyServer(Context context, LocalResolver localResolver, PlainDnsServers plainDnsServers) {
         this.context = context.getApplicationContext();
+        this.localResolver = localResolver;
+        this.plainDnsServers = plainDnsServers != null ? plainDnsServers : () -> {
+            List<InetSocketAddress> servers = new ArrayList<>();
+            for (InetAddress address : eu.faircode.netguard.ServiceSinkhole.getDns(this.context))
+                servers.add(new InetSocketAddress(address, 53));
+            return servers;
+        };
     }
 
     public static synchronized DnsProxyServer getInstance(Context context) {
@@ -120,7 +141,7 @@ public class DnsProxyServer {
      */
     public synchronized void start() {
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
-        boolean dohEnabled = prefs.getBoolean("doh_enabled", false);
+        boolean dohEnabled = prefs.getBoolean("doh_enabled", false) || prefs.getBoolean("ts_enabled", false);
 
         if (!dohEnabled) {
             Log.i(TAG, "DoH not enabled, not starting DNS proxy");
@@ -310,8 +331,9 @@ public class DnsProxyServer {
      * Call this from ServiceSinkhole.reload() to handle settings changes.
      */
     public synchronized void checkAndUpdateState() {
+        plainServers = null; // The network or the DNS settings may have changed.
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
-        boolean dohEnabled = prefs.getBoolean("doh_enabled", false);
+        boolean dohEnabled = prefs.getBoolean("doh_enabled", false) || prefs.getBoolean("ts_enabled", false);
 
         if (dohEnabled && !running.get()) {
             Log.i(TAG, "DoH enabled but proxy not running, starting");
@@ -348,6 +370,16 @@ public class DnsProxyServer {
                 final InetAddress clientAddress = request.getAddress();
                 final int clientPort = request.getPort();
 
+                // A Tailnet name is answered from memory, so answer it here.
+                // Queued behind the workers it would fail together with
+                // ordinary names whenever those all wait for an upstream
+                // resolver that does not respond.
+                byte[] local = resolveLocally(queryData);
+                if (local != null) {
+                    serverSocket.send(new DatagramPacket(local, local.length, clientAddress, clientPort));
+                    continue;
+                }
+
                 // Handle the query in a separate thread. Overload gets an
                 // immediate SERVFAIL instead of retaining stale work while
                 // every worker waits on the same failed DoH endpoint.
@@ -361,6 +393,39 @@ public class DnsProxyServer {
                 }
             }
         }
+    }
+
+    /** The Tailscale answer for query, or null if it is an ordinary name. */
+    @Nullable
+    private byte[] resolveLocally(byte[] queryData) {
+        if (!isPlausibleDnsQuery(queryData)) return null;
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
+        return prefs.getBoolean("ts_enabled", false) ? localResolver.resolve(queryData) : null;
+    }
+
+    private static final long PLAIN_SERVERS_MAX_AGE_NANOS = TimeUnit.SECONDS.toNanos(2);
+
+    private static final class PlainServers {
+        final List<InetSocketAddress> servers;
+        final long loaded = System.nanoTime();
+        PlainServers(List<InetSocketAddress> servers) { this.servers = servers; }
+    }
+
+    private volatile PlainServers plainServers;
+
+    /**
+     * The resolvers for plain DNS. Looking them up asks ConnectivityManager,
+     * which is too much for every query once all of the device's DNS passes
+     * here. A reload (every network change causes one) drops the cached list,
+     * and it is short-lived besides.
+     */
+    private List<InetSocketAddress> plainServers() {
+        PlainServers current = plainServers;
+        if (current == null || System.nanoTime() - current.loaded > PLAIN_SERVERS_MAX_AGE_NANOS) {
+            current = new PlainServers(plainDnsServers.get());
+            plainServers = current;
+        }
+        return current.servers;
     }
 
     static ThreadPoolExecutor createRequestExecutor(int workers, int queueCapacity) {
@@ -414,6 +479,21 @@ public class DnsProxyServer {
 
             SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
             byte[] responseData = null;
+
+            if (prefs.getBoolean("ts_enabled", false))
+                responseData = localResolver.resolve(queryData);
+            boolean plainDns = !prefs.getBoolean("doh_enabled", false);
+            if (responseData == null && plainDns) responseData = resolveViaStandardDns(queryData);
+            if (responseData != null) {
+                DatagramSocket socket = serverSocket;
+                if (socket != null && !socket.isClosed())
+                    socket.send(new DatagramPacket(responseData, responseData.length, clientAddress, clientPort));
+                return;
+            }
+            if (plainDns) {
+                sendServFailResponse(queryData, clientAddress, clientPort);
+                return;
+            }
 
             // Circuit breaker: skip DoH if we recently had too many failures
             CircuitState state = getCurrentCircuitState();
@@ -590,6 +670,21 @@ public class DnsProxyServer {
             SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
             byte[] responseData = null;
 
+            if (prefs.getBoolean("ts_enabled", false))
+                responseData = localResolver.resolve(queryData);
+            boolean plainDns = !prefs.getBoolean("doh_enabled", false);
+            if (responseData == null && plainDns) responseData = resolveViaStandardDns(queryData, true);
+            if (responseData != null) {
+                out.writeShort(responseData.length);
+                out.write(responseData);
+                out.flush();
+                return;
+            }
+            if (plainDns) {
+                sendTcpServFail(out, queryData);
+                return;
+            }
+
             CircuitState state = getCurrentCircuitState();
             boolean circuitOpen = state.isOpen(System.currentTimeMillis());
             AtomicInteger queryFailedAttempts = new AtomicInteger(0);
@@ -617,7 +712,7 @@ public class DnsProxyServer {
 
                 boolean dnsFallback = prefs.getBoolean("doh_dns_fallback", false);
                 if (dnsFallback) {
-                    byte[] fallbackResponse = resolveViaStandardDns(queryData);
+                    byte[] fallbackResponse = resolveViaStandardDns(queryData, true);
                     if (fallbackResponse != null) {
                         Log.w(TAG, "DoH failed, used standard DNS fallback (TCP)");
                         out.writeShort(fallbackResponse.length);
@@ -645,22 +740,35 @@ public class DnsProxyServer {
      */
     @Nullable
     private byte[] resolveViaStandardDns(byte[] queryData) {
-        List<InetAddress> dnsServers = eu.faircode.netguard.ServiceSinkhole.getDns(context);
+        return resolveViaStandardDns(queryData, false);
+    }
+
+    @Nullable
+    private byte[] resolveViaStandardDns(byte[] queryData, boolean tcp) {
+        List<InetSocketAddress> dnsServers = plainServers();
         if (dnsServers.isEmpty()) {
             Log.w(TAG, "No fallback DNS servers available");
             return null;
         }
 
-        for (InetAddress dnsServer : dnsServers) {
+        for (InetSocketAddress dnsServer : dnsServers) {
+            if (tcp) {
+                try {
+                    return queryPlainTcp(dnsServer, queryData);
+                } catch (IOException ex) {
+                    Log.w(TAG, "TCP DNS fallback failed: " + ex.getMessage());
+                    continue;
+                }
+            }
             try (DatagramSocket socket = new DatagramSocket()) {
                 // Connect the socket so the kernel drops any packet not from
                 // dnsServer:53 before it ever reaches us -- otherwise the
                 // socket is unconnected and any host reaching this ephemeral
                 // port qualifies.
-                socket.connect(dnsServer, 53);
+                socket.connect(dnsServer);
 
                 DatagramPacket request = new DatagramPacket(
-                        queryData, queryData.length, dnsServer, 53);
+                        queryData, queryData.length, dnsServer);
                 socket.send(request);
 
                 // Kernel-level connect() filters by sender address/port;
@@ -698,6 +806,40 @@ public class DnsProxyServer {
 
         Log.e(TAG, "All fallback DNS servers failed");
         return null;
+    }
+
+    private static byte[] queryPlainTcp(InetSocketAddress server, byte[] query) throws IOException {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(FALLBACK_DNS_TIMEOUT_MS);
+        try (Socket socket = new Socket()) {
+            socket.connect(server, FALLBACK_DNS_TIMEOUT_MS);
+            DataOutputStream out = new DataOutputStream(socket.getOutputStream());
+            out.writeShort(query.length);
+            out.write(query);
+            out.flush();
+            byte[] prefix = new byte[2];
+            readTcpFrameBytes(socket, prefix, deadline);
+            int size = ((prefix[0] & 0xff) << 8) | (prefix[1] & 0xff);
+            if (size < 12) throw new IOException("Short TCP DNS response");
+            byte[] response = new byte[size];
+            readTcpFrameBytes(socket, response, deadline);
+            if (response[0] != query[0] || response[1] != query[1])
+                throw new IOException("Mismatched TCP DNS transaction");
+            if ((response[2] & 0x02) != 0)
+                throw new IOException("Truncated TCP DNS response");
+            return response;
+        }
+    }
+
+    private static void readTcpFrameBytes(Socket socket, byte[] data, long deadline) throws IOException {
+        int offset = 0;
+        while (offset < data.length) {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) throw new SocketTimeoutException("TCP DNS response deadline");
+            socket.setSoTimeout((int) Math.max(1, TimeUnit.NANOSECONDS.toMillis(remaining)));
+            int count = socket.getInputStream().read(data, offset, data.length - offset);
+            if (count < 0) throw new EOFException("Incomplete TCP DNS response");
+            offset += count;
+        }
     }
 
     private void sendTcpServFail(DataOutputStream out, byte[] queryData) throws IOException {

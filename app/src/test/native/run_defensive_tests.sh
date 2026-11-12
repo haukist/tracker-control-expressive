@@ -42,4 +42,7 @@ compile icmp_socket_test app/src/test/native/icmp_socket_test.c \
 compile ip_flow_policy_test app/src/test/native/ip_flow_policy_test.c \
     app/src/main/jni/netguard/ip.c app/src/main/jni/netguard/policy.c \
     app/src/main/jni/netguard/ip6_ext.c app/src/main/jni/netguard/tls.c \
-    -Wl,--wrap=dlopen -Wl,--wrap=dlsym -ldl -pthread
+    -Wl,--wrap=dlopen -Wl,--wrap=dlsym -Wl,--wrap=write -ldl -pthread
+compile tailscale_route_test app/src/test/native/tailscale_route_test.c
+compile tailscale_pmtu_test app/src/test/native/tailscale_pmtu_test.c
+compile tun_io_test app/src/test/native/tun_io_test.c -Wl,--wrap=write -pthread

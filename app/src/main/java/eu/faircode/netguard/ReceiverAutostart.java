@@ -75,6 +75,7 @@ public class ReceiverAutostart extends BroadcastReceiver {
     public static void upgrade(boolean initialized, Context context) {
         synchronized (context.getApplicationContext()) {
             SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
+            net.kollnig.missioncontrol.vpn.VpnEgressPolicy.repairLegacyConflict(prefs);
             int oldVersion = prefs.getInt("version", -1);
             int newVersion = Util.getSelfVersionCode(context);
             if (oldVersion == newVersion)

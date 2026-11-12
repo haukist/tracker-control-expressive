@@ -13,12 +13,19 @@
 
 #include "netguard.h"
 #include "udp_state.h"
+#include "tailscale_pmtu.h"
 
 static int failures;
 static int unexpected_handler_calls;
 static int policy_calls;
 static int uid_calls;
 static int wireguard_writes;
+static int tailscale_writes;
+static int tun_writes;
+static uint8_t last_tun_write[2048];
+static size_t last_tun_write_length;
+static int tailscale_enabled;
+static int tailscale_block_other_ipv6;
 static int rst_writes;
 static int blocked_udp_calls;
 static int expect_direct;
@@ -26,6 +33,7 @@ static int direct_calls;
 static int configured_uid = 10042;
 static int policy_allowed = 1;
 static int blocked_udp;
+static int active_udp;
 static jint last_policy_uid = -1;
 static struct allowed allowed_empty;
 
@@ -158,9 +166,24 @@ struct allowed *is_address_allowed(const struct arguments *unused,
     return policy_allowed ? &allowed_empty : NULL;
 }
 
+// The only direct TUN write in ip.c is the overlay "packet too big" answer.
+ssize_t __wrap_write(int fd, const void *data, size_t length) {
+    (void) fd;
+    tun_writes++;
+    last_tun_write_length = length < sizeof(last_tun_write) ? length : sizeof(last_tun_write);
+    memcpy(last_tun_write, data, last_tun_write_length);
+    return (ssize_t) length;
+}
+
+int tailscale_is_enabled(void) { return tailscale_enabled; }
+int tailscale_blocks_other_ipv6(void) { return tailscale_block_other_ipv6; }
+void write_tailscale_packet(const void *packet, size_t length) { tailscale_writes++; }
+
 int write_wireguard_packet(const void *packet, size_t length,
                            ssize_t *written, int *write_errno) {
     (void) packet;
+    // Tailscale scenarios have no WireGuard socketpair attached.
+    if (!atomic_load(&wg_required)) return 0;
     wireguard_writes++;
     if (written != NULL)
         *written = (ssize_t) length;
@@ -197,7 +220,7 @@ int get_udp_session_state(const struct arguments *unused, const uint8_t *packet,
     (void) unused;
     (void) packet;
     (void) payload;
-    return blocked_udp ? UDP_BLOCKED : -1;
+    return blocked_udp ? UDP_BLOCKED : active_udp ? UDP_ACTIVE : -1;
 }
 
 void block_udp(const struct arguments *unused, const uint8_t *packet,
@@ -263,6 +286,11 @@ static void reset_fakes(void) {
     policy_calls = 0;
     uid_calls = 0;
     wireguard_writes = 0;
+    tailscale_writes = 0;
+    tun_writes = 0;
+    last_tun_write_length = 0;
+    tailscale_enabled = 0;
+    tailscale_block_other_ipv6 = 0;
     rst_writes = 0;
     blocked_udp_calls = 0;
     expect_direct = 0;
@@ -271,6 +299,7 @@ static void reset_fakes(void) {
     unexpected_handler_calls = 0;
     last_policy_uid = -1;
     blocked_udp = 0;
+    active_udp = 0;
     configured_uid = 10042;
     policy_allowed = 1;
     route_flow_invalidate();
@@ -644,6 +673,318 @@ static void test_split_tunnel_routes_outside_allowed_ips_direct(void) {
           "full tunnel hands every destination to WireGuard again");
 }
 
+static void test_tailscale_tcp_revalidation(void) {
+    _Alignas(struct iphdr) uint8_t packet[256];
+    reset_fakes();
+    atomic_store(&wg_required, 0);
+    tailscale_enabled = 1;
+    size_t length = make_tcp(packet, 43000, 1, 0, 0, NULL, 0);
+    set_destination(packet, "100.64.1.2");
+    run(packet, length);
+    CHECK(policy_calls == 1 && tailscale_writes == 1 && wireguard_writes == 0,
+          "Tailscale SYN passes policy independently of WG routing");
+    length = make_tcp(packet, 43000, 0, 1, 0, NULL, 0);
+    set_destination(packet, "100.64.1.2");
+    run(packet, length);
+    CHECK(policy_calls == 1 && tailscale_writes == 2, "Tailscale caches allowed established TCP");
+    route_flow_invalidate();
+    policy_allowed = 0;
+    configured_uid = 0;
+    run(packet, length);
+    CHECK(policy_calls == 2 && tailscale_writes == 2 && rst_writes == 1,
+          "Tailscale established TCP rechecks policy after reload and drops blocked flow");
+    CHECK(last_policy_uid == 10042, "Tailscale retains the real socket owner");
+    run(packet, length);
+    CHECK(policy_calls == 2 && tailscale_writes == 2 && rst_writes == 1,
+          "Tailscale blocked cache neither forwards nor repeats resets");
+    atomic_store(&wg_required, 1);
+}
+
+static void test_tailscale_udp_verdict_cache(void) {
+    _Alignas(struct iphdr) uint8_t packet[256];
+    const uint8_t opaque[] = {0x17, 0x03, 0x03, 0x00, 0x01, 0x7f};
+    reset_fakes();
+    atomic_store(&wg_required, 0);
+    tailscale_enabled = 1;
+    size_t length = make_udp(packet, 43010, opaque, sizeof(opaque));
+    set_destination(packet, "100.64.1.2");
+    run(packet, length);
+    run(packet, length);
+    run(packet, length);
+    CHECK(policy_calls == 1 && uid_calls == 1 && tailscale_writes == 3,
+          "allowed Tailnet UDP resolves its owner and policy once per flow");
+
+    route_flow_invalidate();
+    policy_allowed = 0;
+    run(packet, length);
+    CHECK(policy_calls == 2 && tailscale_writes == 3 && blocked_udp_calls == 1,
+          "a policy reload rechecks Tailnet UDP and blocks before the bridge");
+    run(packet, length);
+    CHECK(policy_calls == 2 && tailscale_writes == 3 && blocked_udp_calls == 1,
+          "blocked Tailnet UDP uses negative state without Java or the bridge");
+
+    // An unresolved owner must stay uncached so ownership is retried.
+    reset_fakes();
+    atomic_store(&wg_required, 0);
+    tailscale_enabled = 1;
+    configured_uid = -1;
+    length = make_udp(packet, 43011, opaque, sizeof(opaque));
+    set_destination(packet, "100.64.1.2");
+    run(packet, length);
+    run(packet, length);
+    CHECK(policy_calls == 2 && uid_calls == 2 && tailscale_writes == 2,
+          "Tailnet UDP with an unknown owner is never pinned as allowed");
+
+    // The cached verdict belongs to one five-tuple only.
+    configured_uid = 10042;
+    run(packet, length);
+    run(packet, length);
+    CHECK(policy_calls == 3 && uid_calls == 3 && tailscale_writes == 4,
+          "Tailnet UDP is cached once its owner resolves");
+    length = make_udp(packet, 43012, opaque, sizeof(opaque));
+    set_destination(packet, "100.64.1.2");
+    policy_allowed = 0;
+    run(packet, length);
+    CHECK(policy_calls == 4 && tailscale_writes == 4 && blocked_udp_calls == 1,
+          "a different Tailnet UDP tuple does not inherit an allowed verdict");
+    atomic_store(&wg_required, 1);
+}
+
+static void test_tailscale_oversized_packet_gets_too_big(void) {
+    _Alignas(struct iphdr) static uint8_t packet[2048];
+    static const uint8_t payload[1400];
+    reset_fakes();
+    atomic_store(&wg_required, 0);
+    tailscale_enabled = 1;
+
+    size_t length = make_udp(packet, 43020, payload, 1252);
+    set_destination(packet, "100.64.1.2");
+    CHECK(length == 1280, "fixture builds a packet of exactly the overlay MTU");
+    run(packet, length);
+    CHECK(tailscale_writes == 1 && tun_writes == 0,
+          "a packet of exactly the overlay MTU is forwarded");
+
+    length = make_udp(packet, 43020, payload, sizeof(payload));
+    set_destination(packet, "100.64.1.2");
+    run(packet, length);
+    CHECK(tailscale_writes == 1 && tun_writes == 1,
+          "an oversized Tailnet packet is answered instead of forwarded");
+    CHECK(last_tun_write_length == 576 && last_tun_write[9] == IPPROTO_ICMP &&
+          last_tun_write[20] == 3 && last_tun_write[21] == 4 &&
+          ((last_tun_write[26] << 8) | last_tun_write[27]) == 1280,
+          "the answer is ICMP fragmentation needed with the overlay MTU");
+    CHECK(memcmp(last_tun_write + 16, packet + 12, 4) == 0,
+          "the answer returns to the sending address");
+
+    // A sender that ignores the answer cannot turn each packet into a write.
+    for (int i = 0; i < 100; i++)
+        run(packet, length);
+    CHECK(tailscale_writes == 1 && tun_writes <= TAILSCALE_TOO_BIG_BURST + 1,
+          "repeated oversized Tailnet packets are dropped with rate-limited answers");
+    int answers = tun_writes;
+
+    // Another peer still learns its path MTU while the first one is limited.
+    length = make_udp(packet, 43020, payload, sizeof(payload));
+    set_destination(packet, "100.64.1.3");
+    CHECK(tailscale_too_big_slot((const uint8_t *) "d@", 4) !=
+          tailscale_too_big_slot((const uint8_t *) "d@", 4),
+          "fixture peers use separate rate limits");
+    run(packet, length);
+    CHECK(tun_writes == answers + 1 && memcmp(last_tun_write + 12, packet + 16, 4) == 0,
+          "a rate-limited peer does not suppress the answer for another peer");
+    answers = tun_writes;
+
+    static uint8_t packet6[2048];
+    length = make_tcp6(packet6, 43023, 0, 1, 1, payload, sizeof(payload));
+    inet_pton(AF_INET6, "fd7a:115c:a1e0::2", &((struct ip6_hdr *) packet6)->ip6_dst);
+    configured_uid = -1; // An established flow without owner fails closed first.
+    run(packet6, length);
+    CHECK(tun_writes == answers, "an unattributed oversized IPv6 packet gets no answer");
+    configured_uid = 10042;
+    run(packet6, length);
+    CHECK(tailscale_writes == 1 && tun_writes == answers + 1 &&
+          last_tun_write_length == 1280 && last_tun_write[6] == IPPROTO_ICMPV6 &&
+          last_tun_write[40] == 2 && ((last_tun_write[46] << 8) | last_tun_write[47]) == 1280,
+          "an oversized Tailnet IPv6 packet is answered with packet too big");
+    answers = tun_writes;
+
+    // An oversized IPv6 fragment is answered only if it is the first one.
+    struct ip6_hdr *fragmented = (struct ip6_hdr *) packet6;
+    memset(packet6, 0, sizeof(struct ip6_hdr) + 8);
+    fragmented->ip6_vfc = 0x60;
+    fragmented->ip6_nxt = IPPROTO_FRAGMENT;
+    fragmented->ip6_plen = htons(1400);
+    inet_pton(AF_INET6, "2001:db8::10", &fragmented->ip6_src);
+    inet_pton(AF_INET6, "fd7a:115c:a1e0::3", &fragmented->ip6_dst);
+    uint8_t *fragment = packet6 + sizeof(struct ip6_hdr);
+    fragment[0] = IPPROTO_UDP;
+    fragment[3] = 0x08; // offset 1: not the first fragment
+    run(packet6, sizeof(struct ip6_hdr) + 1400);
+    CHECK(tun_writes == answers, "a later oversized IPv6 fragment gets no answer");
+    fragment[3] = 0x01; // offset 0, more fragments follow
+    run(packet6, sizeof(struct ip6_hdr) + 1400);
+    CHECK(tun_writes == answers + 1 && last_tun_write[40] == 2,
+          "the first oversized IPv6 fragment is answered with packet too big");
+    answers = tun_writes;
+
+    // The policy still decides first: a blocked flow gets no answer at all.
+    policy_allowed = 0;
+    length = make_udp(packet, 43021, payload, sizeof(payload));
+    set_destination(packet, "100.64.1.2");
+    run(packet, length);
+    CHECK(tailscale_writes == 1 && tun_writes == answers && blocked_udp_calls == 1,
+          "a blocked oversized Tailnet packet is dropped silently");
+
+    // Ordinary traffic keeps the large interface MTU.
+    reset_fakes();
+    atomic_store(&wg_required, 0);
+    tailscale_enabled = 1;
+    expect_direct = 1;
+    length = make_udp(packet, 43022, payload, sizeof(payload));
+    run(packet, length);
+    CHECK(direct_calls == 1 && tun_writes == 0,
+          "oversized ordinary traffic is not limited by the overlay MTU");
+    atomic_store(&wg_required, 1);
+}
+
+static void test_tailscale_dns_policy_and_native_sessions(void) {
+    _Alignas(struct iphdr) uint8_t packet[256];
+    reset_fakes();
+    atomic_store(&wg_required, 0);
+    tailscale_enabled = 1;
+    policy_allowed = 0;
+    size_t length = make_tcp(packet, 43002, 1, 0, 0, NULL, 0);
+    set_destination(packet, "100.64.1.2");
+    struct tcphdr *tcp = (struct tcphdr *) (packet + sizeof(struct iphdr));
+    tcp->dest = htons(53);
+    run(packet, length);
+    tcp->syn = 0;
+    tcp->ack = 1;
+    run(packet, length);
+    CHECK(policy_calls == 1 && tailscale_writes == 0 && direct_calls == 0,
+          "blocked Tailnet TCP DNS never forwards subsequent non-SYN packets");
+
+    // A redirected TCP DNS flow already owns a native proxy session. Its ACK
+    // must go to that session even though no new redirect is returned here.
+    struct iphdr *ip = (struct iphdr *) packet;
+    struct ng_session session = {0};
+    session.protocol = IPPROTO_TCP;
+    session.tcp.version = 4;
+    session.tcp.source = tcp->source;
+    session.tcp.dest = tcp->dest;
+    session.tcp.saddr.ip4 = ip->saddr;
+    session.tcp.daddr.ip4 = ip->daddr;
+    context.ng_session = &session;
+    route_flow_invalidate();
+    policy_allowed = 1;
+    expect_direct = 1;
+    run(packet, length);
+    CHECK(direct_calls == 1 && tailscale_writes == 0,
+          "existing Tailnet TCP DNS retains its native proxy session");
+    context.ng_session = NULL;
+
+    length = make_udp(packet, 43003, NULL, 0);
+    set_destination(packet, "100.64.1.2");
+    ((struct udphdr *) (packet + sizeof(struct iphdr)))->dest = htons(53);
+    active_udp = 1;
+    run(packet, length);
+    CHECK(direct_calls == 2 && tailscale_writes == 0,
+          "existing Tailnet UDP DNS retains its native proxy session");
+    atomic_store(&wg_required, 1);
+}
+
+static void test_tailscale_ipv6_preserves_ipv6_disabled_setting(void) {
+    _Alignas(struct ip6_hdr) uint8_t packet[256];
+    reset_fakes();
+    atomic_store(&wg_required, 0);
+    tailscale_enabled = 1;
+    tailscale_block_other_ipv6 = 1;
+    size_t length = make_tcp6(packet, 43001, 1, 0, 0, NULL, 0);
+    run(packet, length);
+    CHECK(policy_calls == 0 && tailscale_writes == 0 && unexpected_handler_calls == 0,
+          "ordinary IPv6 stays blocked while Tailnet IPv6 is enabled");
+    CHECK(rst_writes == 1 && tun_writes == 0,
+          "a blocked IPv6 TCP attempt is reset so the app falls back at once");
+    ((struct tcphdr *) (packet + sizeof(struct ip6_hdr)))->rst = 1;
+    run(packet, length);
+    CHECK(rst_writes == 1, "a reset is never answered with a reset");
+    ((struct tcphdr *) (packet + sizeof(struct ip6_hdr)))->rst = 0;
+
+    // A reset is never sent from a multicast address or to no address.
+    struct ip6_hdr *ip6 = (struct ip6_hdr *) packet;
+    struct in6_addr tcp_destination = ip6->ip6_dst, tcp_source = ip6->ip6_src;
+    inet_pton(AF_INET6, "ff02::1", &ip6->ip6_dst);
+    run(packet, length);
+    ip6->ip6_dst = tcp_destination;
+    memset(&ip6->ip6_src, 0, sizeof(ip6->ip6_src));
+    run(packet, length);
+    ip6->ip6_src = tcp_source;
+    CHECK(rst_writes == 1, "blocked IPv6 TCP to multicast or from :: is dropped without a reset");
+
+    // A flood of attempts to one destination is not answered one for one.
+    for (int i = 0; i < 100; i++)
+        run(packet, length);
+    // The limiter runs on the real clock: allow for refills if this loop is
+    // preempted, but 100 attempts must still be far from 100 resets.
+    CHECK(rst_writes > 1 && rst_writes < 50,
+          "resets for blocked IPv6 TCP are rate limited per destination");
+    int resets = rst_writes;
+
+    // Anything else is answered with ICMPv6 "no route", except multicast.
+    ip6->ip6_nxt = IPPROTO_UDP;
+    struct udphdr *udp = (struct udphdr *) (packet + sizeof(struct ip6_hdr));
+    memset(udp, 0, sizeof(*udp));
+    udp->source = htons(43030);
+    udp->dest = htons(443);
+    udp->len = htons(sizeof(struct udphdr));
+    ip6->ip6_plen = htons(sizeof(struct udphdr));
+    size_t udp_length = sizeof(struct ip6_hdr) + sizeof(struct udphdr);
+    run(packet, udp_length);
+    CHECK(policy_calls == 0 && tailscale_writes == 0 && tun_writes == 1 &&
+          last_tun_write[6] == IPPROTO_ICMPV6 && last_tun_write[40] == 1 &&
+          last_tun_write[41] == 0 && memcmp(last_tun_write + 24, packet + 8, 16) == 0,
+          "a blocked IPv6 datagram is answered with no route to destination");
+    struct in6_addr unicast = ip6->ip6_dst;
+    inet_pton(AF_INET6, "ff02::fb", &ip6->ip6_dst);
+    run(packet, udp_length);
+    CHECK(tun_writes == 1, "blocked IPv6 multicast is dropped without an answer");
+    ip6->ip6_dst = unicast;
+
+    // A fragment has no upper-layer header here; it may be a non-first one.
+    ip6->ip6_nxt = IPPROTO_FRAGMENT;
+    memset(packet + sizeof(struct ip6_hdr), 0, 8);
+    packet[sizeof(struct ip6_hdr)] = IPPROTO_UDP;
+    ip6->ip6_plen = htons(8);
+    run(packet, sizeof(struct ip6_hdr) + 8);
+    CHECK(tun_writes == 1 && rst_writes == resets, "a blocked IPv6 fragment is dropped without an answer");
+
+    // An ICMPv6 error is recognised behind an extension header and not answered,
+    // while an echo request behind the same header is.
+    ip6->ip6_nxt = IPPROTO_DSTOPTS;
+    uint8_t *extension = packet + sizeof(struct ip6_hdr);
+    memset(extension, 0, 16);
+    extension[0] = IPPROTO_ICMPV6;
+    extension[2] = 1; // PadN covering the remaining six bytes
+    extension[3] = 4;
+    extension[8] = 1; // destination unreachable
+    ip6->ip6_plen = htons(16);
+    run(packet, sizeof(struct ip6_hdr) + 16);
+    CHECK(tun_writes == 1, "an ICMPv6 error behind an extension header is not answered");
+    extension[8] = 128; // echo request
+    int handlers_before = unexpected_handler_calls;
+    handle_ip(&args, packet, sizeof(struct ip6_hdr) + 16, -1, 0, 1000);
+    CHECK(tun_writes == 2 && unexpected_handler_calls == handlers_before,
+          "a blocked ICMPv6 echo request is answered with no route");
+    ip6->ip6_nxt = IPPROTO_TCP;
+    ip6->ip6_plen = htons(sizeof(struct tcphdr));
+    make_tcp6(packet, 43001, 1, 0, 0, NULL, 0);
+    inet_pton(AF_INET6, "fd7a:115c:a1e0::2", &((struct ip6_hdr *) packet)->ip6_dst);
+    run(packet, length);
+    CHECK(policy_calls == 1 && tailscale_writes == 1 && wireguard_writes == 0,
+          "Tailnet ULA still reaches its own egress with ordinary IPv6 disabled");
+    atomic_store(&wg_required, 1);
+}
+
 int main(void) {
     memset(&context, 0, sizeof(context));
     memset(&args, 0, sizeof(args));
@@ -662,6 +1003,11 @@ int main(void) {
     test_udp_policy_invalidation_and_negative_state();
     test_selected_route_fast_path();
     test_split_tunnel_routes_outside_allowed_ips_direct();
+    test_tailscale_tcp_revalidation();
+    test_tailscale_udp_verdict_cache();
+    test_tailscale_oversized_packet_gets_too_big();
+    test_tailscale_dns_policy_and_native_sessions();
+    test_tailscale_ipv6_preserves_ipv6_disabled_setting();
     if (failures != 0)
         return 1;
     puts("ip_flow_policy_test: all tests passed");

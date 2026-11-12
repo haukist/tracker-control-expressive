@@ -21,7 +21,11 @@
 #include "tls.h"
 #include "ip6_ext.h"
 #include "wg_flow_cache.h"
+#include "tailscale_route.h"
+#include "tailscale_pmtu.h"
+#include "tun_io.h"
 #include <stdatomic.h>
+#include <sys/time.h>
 
 int max_tun_msg = 0;
 extern int loglevel;
@@ -188,6 +192,104 @@ static void write_stateless_tcp_reset(const struct arguments *args, int version,
     rst.remote_seq = reset_ack;
     if (write_tcp(args, &rst, NULL, 0, 0, reset_has_ack, 0, 1) < 0)
         log_android(ANDROID_LOG_WARN, "TCP stateless reset write failed");
+}
+
+// The VPN interface keeps its large MTU for ordinary traffic, so the kernel
+// only learns the overlay's smaller limit per destination, the way it would
+// from a real next hop: answer an oversized packet with "packet too big" and
+// drop it. The engine would drop it anyway; this lets the sender shrink.
+// IPv4 without DF is answered too rather than fragmented here: Linux records
+// the reported path MTU for the destination either way and fragments later
+// datagrams itself, at the cost of the first one.
+// An ICMP error must never be answered with another one.
+static int is_icmp_error(int protocol, const uint8_t *pkt, const uint8_t *payload,
+                         size_t length) {
+    if (payload < pkt || (size_t) (payload - pkt) >= length)
+        return 0;
+    uint8_t type = *payload;
+    if (protocol == IPPROTO_ICMP)
+        return type == 3 || type == 4 || type == 5 || type == 11 || type == 12;
+    return protocol == IPPROTO_ICMPV6 && type < 128;
+}
+
+// Whether one more locally generated answer (an ICMP error or a TCP reset)
+// about pkt may be written. Limited per destination (hashed, so a collision
+// shares a limit): one noisy flow should not starve the answer another
+// destination is waiting for, nor turn every packet into a TUN write.
+// pkt must hold a complete fixed IPv4 or IPv6 header matching version.
+static int tailscale_answer_permitted(struct tailscale_too_big_limit *limits,
+                                      int version, const uint8_t *pkt) {
+    const uint8_t *daddr = version == 4 ? pkt + 16 : pkt + 24;
+    struct timespec now;
+    return clock_gettime(CLOCK_MONOTONIC, &now) == 0 &&
+           tailscale_too_big_permitted(
+                   &limits[tailscale_too_big_slot(daddr, version == 4 ? 4 : 16)],
+                   (uint64_t) now.tv_sec * 1000u + (uint64_t) now.tv_nsec / 1000000u);
+}
+
+// Writes a locally generated ICMP error to the app. Packets that get no
+// error at all (answer_length 0) do not spend from the limit.
+static void write_tailscale_icmp_error(const struct arguments *args,
+                                       struct tailscale_too_big_limit *limits,
+                                       int version, const uint8_t *pkt,
+                                       const uint8_t *answer, size_t answer_length) {
+    if (answer_length == 0 || !tailscale_answer_permitted(limits, version, pkt))
+        return;
+
+    if (write_tun_packet(args->tun, args->ctx ? args->ctx->pipefds[0] : -1,
+                         answer, answer_length) < 0)
+        log_android(ANDROID_LOG_WARN, "Tailscale ICMP error write failed");
+}
+
+static void reject_oversized_tailscale_packet(const struct arguments *args,
+                                              int version, int protocol,
+                                              const uint8_t *pkt, const uint8_t *payload,
+                                              size_t length) {
+    // handle_ip()'s extension header walk stops at a Fragment header and
+    // leaves payload on it. Only the first fragment is answered, as for IPv4.
+    if (version == 6 && protocol == IPPROTO_FRAGMENT &&
+        (payload < pkt || (size_t) (payload - pkt) > length ||
+         tailscale_ipv6_later_fragment(payload, length - (size_t) (payload - pkt))))
+        return;
+    static struct tailscale_too_big_limit limits[TAILSCALE_TOO_BIG_SLOTS];
+    uint8_t answer[TAILSCALE_TOO_BIG_MAX];
+    write_tailscale_icmp_error(
+            args, limits, version, pkt, answer,
+            tailscale_too_big(pkt, length, is_icmp_error(protocol, pkt, payload, length),
+                              answer, sizeof(answer)));
+}
+
+// Ordinary IPv6 is switched off, but the overlay puts an IPv6 address and a
+// default route on the interface, so apps still try IPv6 destinations. Tell
+// them at once instead of letting each attempt time out before the IPv4
+// fallback: reset TCP, and answer UDP and ICMPv6 requests with "no route".
+// protocol and payload are the result of handle_ip()'s extension header walk,
+// so an ICMPv6 error behind extension headers is still recognised. Anything
+// the walk could not resolve to an upper-layer header is dropped silently:
+// that includes every fragment, and a non-first fragment must not be answered.
+static void reject_disabled_ipv6_packet(const struct arguments *args, int protocol,
+                                        const uint8_t *pkt, const uint8_t *payload,
+                                        size_t length) {
+    if (protocol == IPPROTO_TCP) {
+        // Resets follow the same rules as the ICMPv6 errors below, with a
+        // budget of their own so neither kind of answer starves the other.
+        static struct tailscale_too_big_limit reset_limits[TAILSCALE_TOO_BIG_SLOTS];
+        if (payload >= pkt && (size_t) (payload - pkt) + sizeof(struct tcphdr) <= length &&
+            !((const struct tcphdr *) payload)->rst &&
+            tailscale_ipv6_answerable(pkt, length) &&
+            tailscale_answer_permitted(reset_limits, 6, pkt))
+            write_stateless_tcp_reset(args, 6, pkt, payload, length);
+        return;
+    }
+    if (protocol != IPPROTO_UDP && protocol != IPPROTO_ICMPV6)
+        return;
+    static struct tailscale_too_big_limit limits[TAILSCALE_TOO_BIG_SLOTS];
+    uint8_t answer[TAILSCALE_TOO_BIG_MAX];
+    write_tailscale_icmp_error(
+            args, limits, 6, pkt, answer,
+            tailscale_ipv6_unreachable(pkt, length,
+                                       is_icmp_error(protocol, pkt, payload, length),
+                                       answer, sizeof(answer)));
 }
 
 // Re-run the authoritative UID lookup only after both the flow cache and the
@@ -616,6 +718,17 @@ void handle_ip(const struct arguments *args,
     }
 
     int wg_is_required = atomic_load_explicit(&wg_required, memory_order_acquire);
+    int tailscale_dest = tailscale_is_enabled() && is_tailscale_destination(version, daddr);
+    // Redirect information is returned only by a new policy lookup. Later DNS
+    // packets must keep the native session that owns the proxy connection.
+    int tailscale_dns_session = tailscale_dest && dport == 53 &&
+            ((protocol == IPPROTO_UDP && udp_session_exists) ||
+             (protocol == IPPROTO_TCP && has_tcp_session(args, version, pkt, payload)));
+    int tailscale_tcp_policy = tailscale_dest && protocol == IPPROTO_TCP && !tailscale_dns_session;
+    // Overlay UDP is handed to the bridge without an ng_session, so nothing
+    // else remembers its allow verdict. DNS keeps its redirect lookup.
+    int tailscale_udp_policy = tailscale_dest && protocol == IPPROTO_UDP &&
+            !udp_session_exists && dport != 53;
 
     jint uid = -1;
 
@@ -633,7 +746,7 @@ void handle_ip(const struct arguments *args,
     // is taking the fast path.
     jint retained_tcp_uid = -1;
     int retained_tcp_owner = 0;
-    if (wg_is_required && protocol == IPPROTO_TCP && !syn &&
+    if ((wg_is_required || tailscale_tcp_policy) && protocol == IPPROTO_TCP && !syn &&
         tcp_owner_lookup(version, saddr, sport, daddr, dport, &retained_tcp_uid))
         retained_tcp_owner = 1;
 
@@ -704,12 +817,26 @@ void handle_ip(const struct arguments *args,
         }
     }
 
+    if (tailscale_tcp_policy && !syn) {
+        int verdict;
+        if (route_flow_lookup_verdict(version, protocol, saddr, sport, daddr, dport, &verdict)) {
+            if (verdict == ROUTE_FLOW_VERDICT_BLOCKED)
+                return;
+            tcp_flow_cached_allowed = (verdict == ROUTE_FLOW_VERDICT_ALLOWED);
+        }
+        if (!tcp_flow_cached_allowed) {
+            tcp_flow_policy_pending = 1;
+            uid = retained_tcp_owner ? retained_tcp_uid : resolve_flow_owner(
+                    args, version, protocol, saddr, sport, daddr, dport, source, dest, pkt, payload, syn);
+        }
+    }
+
     if (tcp_flow_policy_pending && uid < 0) {
         // ServiceSinkhole treats INVALID_UID as an allowed/unknown packet.
         // Keep this flow fail-closed and leave its verdict unknown so the next
         // packet retries ownership after Android has published the socket.
         log_android(ANDROID_LOG_WARN,
-                    "WG TCP owner unavailable for %s/%u > %s/%u; dropping",
+                    "Remote TCP owner unavailable for %s/%u > %s/%u; dropping",
                     source, sport, dest, dport);
         return;
     }
@@ -736,15 +863,34 @@ void handle_ip(const struct arguments *args,
                 cached_udp_uid_known, wants_tunnel);
     }
 
+    // An allowed overlay datagram is only cached once its owner was resolved,
+    // and a policy reload invalidates the cache. Without this every datagram
+    // of a flow repeats the Android owner lookup and the Java policy upcall.
+    // A blocked flow is remembered by block_udp()'s negative session instead.
+    int reuse_tailscale_udp_verdict = 0;
+    if (tailscale_udp_policy) {
+        int verdict;
+        reuse_tailscale_udp_verdict =
+                route_flow_lookup_verdict(version, protocol, saddr, sport, daddr, dport,
+                                          &verdict) &&
+                verdict == ROUTE_FLOW_VERDICT_ALLOWED;
+    }
+
     // Get uid. SNI research mode deliberately lets a 443 SYN through without
     // one so the ClientHello can be reassembled first. That is fine for the
     // block decision, but the routing fork needs the UID now: with no UID and
     // no session, the SYN falls to the global default and every later packet
     // of that flow inherits the answer from it.
-    int sni_candidate = (is_play && protocol == IPPROTO_TCP && dport == 443);
+    // Adding a Tailnet IPv6 address must not silently enable ordinary IPv6
+    // when the user's existing IPv6 setting is off (the builder captures ::/0).
+    if (version == 6 && tailscale_blocks_other_ipv6() && !tailscale_dest) {
+        reject_disabled_ipv6_packet(args, protocol, pkt, payload, length);
+        return;
+    }
+    int sni_candidate = (is_play && protocol == IPPROTO_TCP && dport == 443 && !tailscale_dest);
     if (protocol == IPPROTO_ICMP || protocol == IPPROTO_ICMPV6 ||
         (protocol == IPPROTO_UDP && !reuse_wg_udp_verdict &&
-         !udp_session_exists) ||
+         !reuse_tailscale_udp_verdict && !udp_session_exists) ||
         (protocol == IPPROTO_TCP && syn &&
          (!sni_candidate || route_uid_relevant()))) {
             if (args->ctx->sdk <= 28) // Android 9 Pie
@@ -815,7 +961,7 @@ void handle_ip(const struct arguments *args,
     // Check if allowed
     int allowed = 0;
     struct allowed *redirect = NULL;
-    if (reuse_wg_udp_verdict)
+    if (reuse_wg_udp_verdict || reuse_tailscale_udp_verdict)
         allowed = 1;
     else if (protocol == IPPROTO_UDP && udp_session_exists)
         allowed = 1; // could be a lingering/blocked session
@@ -959,6 +1105,21 @@ void handle_ip(const struct arguments *args,
 
     // Handle allowed traffic
     if (allowed) {
+        // DNS redirects must retain the existing native response inspection and
+        // blocklist recording path. Other overlay traffic is always claimed,
+        // including while the Go engine is unready or the bridge is detached.
+        if (tailscale_dest && !tailscale_dns_session && !(dport == 53 && redirect != NULL)) {
+            if ((tailscale_tcp_policy ||
+                 (tailscale_udp_policy && !reuse_tailscale_udp_verdict)) && uid >= 0)
+                route_flow_store_verdict(version, protocol, saddr, sport, daddr, dport,
+                                         ROUTE_FLOW_VERDICT_ALLOWED);
+            if (length > TAILSCALE_MTU) {
+                reject_oversized_tailscale_packet(args, version, protocol, pkt, payload, length);
+                return;
+            }
+            write_tailscale_packet(pkt, length);
+            return;
+        }
         // WireGuard hijack: when enabled, hand the raw IP packet to the WG
         // bridge instead of running the userspace TCP/UDP state machines.
         // Per-app UID lookup and the block decision above still apply.
@@ -1072,13 +1233,13 @@ void handle_ip(const struct arguments *args,
         // Keep a negative result for tunnelled TCP too. It prevents repeated
         // packets (including retransmissions) from crossing JNI, while an
         // unresolved owner remains deliberately uncached and can be retried.
-        if (wg_is_required && protocol == IPPROTO_TCP && !tcp_native_session &&
+        if ((wg_is_required || tailscale_tcp_policy) && protocol == IPPROTO_TCP && !tcp_native_session &&
             uid >= 0) {
             // Cache every newly blocked established no-session flow,
             // including one whose route changed to direct after invalidation.
             // The policy decision must not be bypassed on the next packet, and
             // a blocked packet must never reach the WireGuard write below.
-            if (!tcp_flow_route_cached)
+            if (wg_is_required && !tcp_flow_route_cached)
                 (void) resolve_tunnel_uid(
                         args, version, protocol, saddr, sport, daddr, dport,
                         source, dest, pkt, payload, syn, uid, NULL);

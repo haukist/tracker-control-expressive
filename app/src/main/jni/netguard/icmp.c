@@ -18,6 +18,7 @@
 */
 
 #include "netguard.h"
+#include "tun_io.h"
 
 extern FILE *pcap_file;
 
@@ -372,7 +373,7 @@ ssize_t write_icmp(const struct arguments *args, const struct icmp_session *cur,
                 args->tun, dest, source, datalen,
                 icmp->icmp_type, icmp->icmp_code, icmp->icmp_id, icmp->icmp_seq);
 
-    ssize_t res = write(args->tun, buffer, len);
+    ssize_t res = write_tun_packet(args->tun, args->ctx ? args->ctx->pipefds[0] : -1, buffer, len);
 
     // Write PCAP record
     if (res >= 0) {

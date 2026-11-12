@@ -119,3 +119,9 @@ wgbridge-rs/target/
 
 # repowise owner-digest key (local)
 .repowise/events.key
+
+# Worktree-local tools, sources and device backups
+/.local/
+
+# Codex remote attachments
+/.codex-remote-attachments/

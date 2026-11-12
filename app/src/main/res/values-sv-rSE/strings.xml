@@ -32,7 +32,7 @@
     <string name="app_copyright">Copyright \u00A9 2019–2022 Konrad Kollnig\n\nTrackerControl är baserat på NetGuard, utvecklat av Marcel Bokhorst (M66B).</string>
     <string name="app_android">TrackerControl kräver Android 5.1 eller senare</string>
     <string name="app_xposed">Xposed orsakar för många krascher, vilket kan leda till att TrackerControl tas bort från Google Play Butik, därför stöds inte TrackerControl medan Xposed är installerat</string>
-    <string name="app_eula">Användningen av denna app sker på egen risk. Ingen app kan erbjuda 100% skydd mot spårning.</string>
+    <string name="app_eula" formatted="false">Användningen av denna app sker på egen risk. Ingen app kan erbjuda 100% skydd mot spårning.</string>
     <string name="app_privacy"><a href='https://github.com/TrackerControl/tracker-control-android#privacy-notice'>Sekretesspolicy</a> <a href='https://github.com/TrackerControl/tracker-control-android#cookie-policy'>Cookiepolicy</a></string>
     <string name="app_ios"><a href='https://ios.trackercontrol.org'>TrackerControl är även tillgängligt för iOS</a></string>
     <string name="channel_foreground">Löpande tjänster</string>

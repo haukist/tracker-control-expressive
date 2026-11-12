@@ -18,6 +18,9 @@ void route_uid_relevant(void) { abort(); }
 void block_udp(void) { abort(); }
 void route_flow_store_verdict(void) { abort(); }
 void write_wireguard_packet(void) { abort(); }
+int tailscale_is_enabled(void) { abort(); }
+int tailscale_blocks_other_ipv6(void) { abort(); }
+void write_tailscale_packet(const void *packet, size_t length) { abort(); }
 void handle_tcp(void) { abort(); }
 void handle_icmp(void) { abort(); }
 void handle_udp(void) { abort(); }

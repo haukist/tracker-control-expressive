@@ -213,6 +213,12 @@ public class WgProfileManager {
 
     public void saveProfile(String id, String name, String config, String provider, String account,
                             String countryCode, String countryName) throws JSONException {
+        saveProfile(id, name, config, provider, account, countryCode, countryName, true);
+    }
+
+    /** Keep a completed provider registration even when another egress prevents activation. */
+    public void saveProfile(String id, String name, String config, String provider, String account,
+                            String countryCode, String countryName, boolean activate) throws JSONException {
         synchronized (STORE_LOCK) {
             JSONArray profiles = readProfilesJson();
             JSONObject profile = TextUtils.isEmpty(id) ? null : findJsonProfile(profiles, id);
@@ -231,8 +237,10 @@ public class WgProfileManager {
 
             SharedPreferences.Editor editor = prefs.edit();
             writeProfilesJson(editor, profiles);
-            editor.putString(PREF_WG_PROFILE, profile.optString("id"));
-            editor.putString(PREF_WG_CONFIG, config);
+            if (activate) {
+                editor.putString(PREF_WG_PROFILE, profile.optString("id"));
+                editor.putString(PREF_WG_CONFIG, config);
+            }
             editor.apply();
         }
     }

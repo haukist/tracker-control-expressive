@@ -129,6 +129,10 @@ struct allowed {
 int write_wireguard_packet(const void *packet, size_t length,
                            ssize_t *written, int *write_errno);
 
+int tailscale_is_enabled(void);
+int tailscale_blocks_other_ipv6(void);
+void write_tailscale_packet(const void *packet, size_t length);
+
 
 struct segment {
     uint32_t seq;

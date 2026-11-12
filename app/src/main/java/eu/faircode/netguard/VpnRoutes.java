@@ -111,6 +111,13 @@ public class VpnRoutes {
         return Collections.singletonList(new IPUtil.CIDR("0.0.0.0", 0));
     }
 
+    /** Capture the entire overlay even before authentication; native drops unknown peers. */
+    public static List<IPUtil.CIDR> withTailscale(List<IPUtil.CIDR> ordinaryRoutes) {
+        List<IPUtil.CIDR> routes = new ArrayList<>(ordinaryRoutes);
+        routes.add(new IPUtil.CIDR("100.64.0.0", 10));
+        return Collections.unmodifiableList(routes);
+    }
+
     /**
      * Returns the route list for an active WireGuard remote-egress tunnel,
      * making the profile's AllowedIPs authoritative over the RFC 1918

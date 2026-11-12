@@ -37,6 +37,18 @@ import java.util.List;
 @RunWith(RobolectricTestRunner.class)
 public class VpnRoutesTest {
 
+    @Test
+    public void tailscaleCaptureDoesNotOpenLanOrChangeDefaultRoutes() throws Exception {
+        List<IPUtil.CIDR> original = VpnRoutes.getRoutes();
+        List<IPUtil.CIDR> captured = VpnRoutes.withTailscale(original);
+        assertFalse(isRouted(original, "100.64.0.1"));
+        assertTrue(isRouted(captured, "100.64.0.0"));
+        assertTrue(isRouted(captured, "100.127.255.255"));
+        assertFalse(isRouted(captured, "192.168.1.1"));
+        assertTrue(isRouted(captured, "8.8.8.8"));
+        assertFalse(isRouted(VpnRoutes.getRoutes(), "100.64.0.1"));
+    }
+
     // --- helpers -------------------------------------------------------------
 
     private static long toLong(java.net.InetAddress addr) {

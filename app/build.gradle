@@ -1,11 +1,13 @@
 apply plugin: 'com.android.application'
 apply plugin: 'org.jetbrains.kotlin.plugin.compose'
 
-def ccacheLauncher = file("$projectDir/gradle/ccache-launcher.sh").absolutePath
+def ccacheLauncher = System.getProperty('os.name').startsWith('Windows') ? '' :
+        file("$projectDir/gradle/ccache-launcher.sh").absolutePath
 
 // WireGuard bridge (Rust/cargo-ndk) build logic. Defines the wgbridgeBuild
 // task and exposes ext.wgbridgeNdkVersion (reused for defaultConfig.ndkVersion).
 apply from: "$projectDir/gradle/wgbridge.gradle"
+apply from: "$projectDir/gradle/tailscale.gradle"
 
 // Resolves the lint tool artifacts while networking is available so release
 // builds can subsequently run with Gradle's --offline flag (as on F-Droid).
@@ -40,6 +42,7 @@ tasks.register('prefetchOfflineBuildClasspaths') {
 }
 
 android {
+    if (project.hasProperty('androidNdkPath')) ndkPath = project.property('androidNdkPath').toString()
     compileSdk = 37
 
     defaultConfig {
@@ -50,6 +53,7 @@ android {
         versionCode 2026110101
         versionName "2026.11.01"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField "boolean", "BATTERY_EXPERIMENT_ENABLED", "false"
 
         // Secure DNS (DoH) configuration
         buildConfigField "String", "DEFAULT_DOH_ENDPOINT", "\"https://dns.quad9.net/dns-query\""
@@ -109,12 +113,37 @@ android {
             shrinkResources = true
             proguardFiles.add(file('proguard-rules.pro'))
         }
+        benchmark {
+            initWith release
+            matchingFallbacks = ['release']
+            debuggable = false
+            signingConfig = signingConfigs.debug
+            applicationIdSuffix ".test"
+            versionNameSuffix "-benchmark"
+            buildConfigField "boolean", "BATTERY_EXPERIMENT_ENABLED", "true"
+            proguardFiles.add(file('src/benchmark/proguard-rules.pro'))
+        }
         debug {
             // Install debug builds alongside release builds on the same device
             applicationIdSuffix ".test"
             versionNameSuffix "-test"
+            buildConfigField "boolean", "BATTERY_EXPERIMENT_ENABLED", "true"
             //minifyEnabled = true
             //proguardFiles.add(file('proguard-rules.pro'))
+        }
+    }
+
+    sourceSets {
+        debug {
+            java.srcDir 'src/batteryExperiment/java'
+            res.srcDir 'src/batteryExperiment/res'
+        }
+        benchmark {
+            java.srcDir 'src/batteryExperiment/java'
+            res.srcDir 'src/batteryExperiment/res'
+        }
+        testBenchmark {
+            java.srcDir 'src/testDebug/java'
         }
     }
 
@@ -195,6 +224,9 @@ android {
 }
 
 androidComponents {
+    beforeVariants(selector().withBuildType('benchmark')) { variantBuilder ->
+        variantBuilder.enableUnitTest = true
+    }
     onVariants(selector().all()) { variant ->
         variant.outputs.forEach { output ->
             output.outputFileName.set("TrackerControl-${variant.name}-latest.apk")
