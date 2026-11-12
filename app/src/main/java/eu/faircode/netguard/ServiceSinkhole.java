@@ -1925,10 +1925,19 @@ public class ServiceSinkhole extends VpnService {
         }
 
         try {
-            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-            Network active = (cm == null ? null : cm.getActiveNetwork());
-            LinkProperties props = (active == null ? null : cm.getLinkProperties(active));
-            String domain = (props == null ? null : props.getDomains());
+            String domain;
+            if (tsEnabled) {
+                // The physical network's search domain must not be applied
+                // while short names belong to the tailnet: the resolver would
+                // ask for "nas.lan" before "nas", and that name is an ordinary
+                // one that goes to the upstream resolver.
+                domain = tsSnapshot.searchDomain();
+            } else {
+                ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+                Network active = (cm == null ? null : cm.getActiveNetwork());
+                LinkProperties props = (active == null ? null : cm.getLinkProperties(active));
+                domain = (props == null ? null : props.getDomains());
+            }
             if (domain != null) {
                 Log.i(TAG, "Using search domain=" + domain);
                 builder.addSearchDomain(domain);

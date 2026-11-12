@@ -118,7 +118,7 @@ public final class TailscaleManager {
     private static void readStatus(Client source, Runnable reconfigure) throws Exception {
         String json = source.statusJSON();
         TailscaleSnapshot next = TailscaleSnapshot.parse(json);
-        boolean addressesChanged = !next.hasSameAddresses(snapshot);
+        boolean addressesChanged = !next.hasSameVpnConfiguration(snapshot);
         loginUrl = new JSONObject(json).optString("authURL", "");
         publish(next);
         if (addressesChanged) reconfigure.run();

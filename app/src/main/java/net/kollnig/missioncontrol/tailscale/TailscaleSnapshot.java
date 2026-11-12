@@ -40,4 +40,20 @@ public final class TailscaleSnapshot {
     public boolean hasSameAddresses(TailscaleSnapshot other) {
         return ipv4.equals(other.ipv4) && ipv6.equals(other.ipv6);
     }
+
+    /**
+     * The search domain for the VPN while Tailscale is enabled: the tailnet's
+     * own suffix where the tailnet uses MagicDNS, otherwise none. Never the
+     * physical network's. It deliberately does not follow the connection
+     * state: a reconnect must not rebuild the VPN interface, and a name under
+     * the suffix is answered locally (with a failure while disconnected).
+     */
+    public String searchDomain() {
+        return magicDNS && !dnsSuffix.isEmpty() ? dnsSuffix : null;
+    }
+
+    /** Whether the VPN interface built from other is still right for this state. */
+    public boolean hasSameVpnConfiguration(TailscaleSnapshot other) {
+        return hasSameAddresses(other) && java.util.Objects.equals(searchDomain(), other.searchDomain());
+    }
 }
