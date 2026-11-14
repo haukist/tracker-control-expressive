@@ -79,9 +79,6 @@ public class ActivityWireGuardProfiles extends AppCompatActivity {
         composeView.setId(R.id.compose_wg_profiles);
         setContentView(composeView);
 
-        getSupportActionBar().setTitle(R.string.setting_wg_profile_manage);
-        getSupportActionBar().setDisplayHomeAsUpEnabled(true);
-
         manager = new WgProfileManager(this);
         manager.migrateIfNeeded();
 
@@ -102,6 +99,11 @@ public class ActivityWireGuardProfiles extends AppCompatActivity {
                 composeView,
                 buildScreenModel(),
                 new WireGuardProfilesScreenCallbacks() {
+                    @Override
+                    public void onNavigateUp() {
+                        finish();
+                    }
+
                     @Override
                     public void onAdd() {
                         showAddProfileChoice();

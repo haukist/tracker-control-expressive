@@ -27,14 +27,18 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.MutableState
@@ -71,6 +75,7 @@ data class WireGuardProfilesScreenModel(
 
 /** Callback boundary for dialogs and persistence owned by ActivityWireGuardProfiles. */
 interface WireGuardProfilesScreenCallbacks {
+    fun onNavigateUp() {}
     fun onAdd()
     fun onEdit(id: String)
     fun onDelete(id: String)
@@ -106,22 +111,32 @@ object WireGuardProfilesScreen {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun WireGuardProfilesScreenContent(
     model: WireGuardProfilesScreenModel,
     callbacks: WireGuardProfilesScreenCallbacks
 ) {
+    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     Scaffold(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
+            .nestedScroll(scrollBehavior.nestedScrollConnection),
+        containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets.safeDrawing,
+        topBar = {
+            ExpressiveMediumTopAppBar(
+                title = stringResource(R.string.setting_wg_profile_manage),
+                onNavigateUp = callbacks::onNavigateUp,
+                scrollBehavior = scrollBehavior
+            )
+        },
         floatingActionButton = {
             FloatingActionButton(
                 onClick = callbacks::onAdd,
                 modifier = Modifier.testTag("wg-profile-add"),
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
             ) {
                 Icon(
                     painter = painterResource(android.R.drawable.ic_input_add),
@@ -170,18 +185,15 @@ private fun WireGuardProfilesList(
             .fillMaxSize()
             .padding(contentPadding),
         // Leave room for the FAB so the last row can be scrolled clear of it.
-        contentPadding = PaddingValues(top = 8.dp, bottom = 80.dp)
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 80.dp),
+        verticalArrangement = Arrangement.spacedBy(ExpressiveGroupSpacing)
     ) {
         itemsIndexed(
             items = rows,
             key = { _, row -> row.id }
         ) { index, row ->
-            WireGuardProfileListItem(row, callbacks)
-            if (index < rows.lastIndex) {
-                HorizontalDivider(
-                    modifier = Modifier.testTag("wg-profile-divider"),
-                    color = MaterialTheme.colorScheme.outlineVariant
-                )
+            ExpressiveGroupedSurface(index = index, count = rows.size) {
+                WireGuardProfileListItem(row, callbacks)
             }
         }
     }
@@ -195,6 +207,7 @@ private fun WireGuardProfileListItem(
     val editDescription = stringResource(R.string.accessibility_wg_profile_edit, row.name)
     val deleteDescription = stringResource(R.string.accessibility_wg_profile_delete, row.name)
     ListItem(
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
         headlineContent = {
             Text(
                 text = row.name,

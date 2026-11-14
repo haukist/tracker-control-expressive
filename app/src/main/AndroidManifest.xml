@@ -197,6 +197,7 @@
             android:name="net.kollnig.missioncontrol.ActivityBlocklists"
             android:configChanges="orientation|screenSize"
             android:label="@string/title_blocklists"
+            android:theme="@style/AppThemeRed.NoActionBar"
             android:parentActivityName="eu.faircode.netguard.ActivitySettings">
             <meta-data
                 android:name="android.support.PARENT_ACTIVITY"
@@ -207,6 +208,7 @@
             android:name="net.kollnig.missioncontrol.ActivityWireGuardProfiles"
             android:configChanges="orientation|screenSize"
             android:label="@string/setting_wg_profile_manage"
+            android:theme="@style/AppThemeRed.NoActionBar"
             android:parentActivityName="eu.faircode.netguard.ActivitySettings">
             <meta-data
                 android:name="android.support.PARENT_ACTIVITY"
@@ -240,6 +242,7 @@
             android:name="net.kollnig.missioncontrol.InsightsActivity"
             android:configChanges="orientation|screenSize"
             android:label="@string/insights_title"
+            android:theme="@style/AppThemeRed.NoActionBar"
             android:parentActivityName="eu.faircode.netguard.ActivityMain">
             <meta-data
                 android:name="android.support.PARENT_ACTIVITY"

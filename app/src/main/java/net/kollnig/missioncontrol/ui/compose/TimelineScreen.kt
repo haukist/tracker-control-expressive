@@ -346,9 +346,9 @@ private fun TimelineInsightsCard(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 8.dp)
                 .semantics { contentDescription = insightsTitle },
-            shape = RoundedCornerShape(20.dp),
+            shape = RoundedCornerShape(24.dp),
             colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant
+                containerColor = MaterialTheme.colorScheme.surfaceContainerLow
             )
         ) {
             Box(
@@ -358,7 +358,7 @@ private fun TimelineInsightsCard(
                     .testTag("timeline-insights-loading"),
                 contentAlignment = Alignment.Center
             ) {
-                CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                ExpressiveLoadingIndicator(contained = true)
             }
         }
 
@@ -408,9 +408,9 @@ private fun TimelineInsightsCard(
                         onClick = callbacks::onOpenInsights
                     )
                     .testTag("timeline-insights-card"),
-                shape = RoundedCornerShape(20.dp),
+                shape = RoundedCornerShape(24.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
                     contentColor = MaterialTheme.colorScheme.onSurface
                 )
             ) {

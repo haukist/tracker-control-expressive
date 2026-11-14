@@ -156,11 +156,10 @@ internal fun LibrariesScreenContent(
                         )
                         if (model.metadataLoading) {
                             Spacer(modifier = Modifier.width(8.dp))
-                            CircularProgressIndicator(
+                            ExpressiveLoadingIndicator(
                                 modifier = Modifier
-                                    .size(16.dp)
-                                    .testTag("libraries-metadata-loading"),
-                                strokeWidth = 2.dp
+                                    .size(20.dp)
+                                    .testTag("libraries-metadata-loading")
                             )
                         }
                     }
