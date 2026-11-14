@@ -68,6 +68,9 @@ class TrackerControlThemeTest {
             themeColour(context, com.google.android.material.R.attr.colorOutlineVariant),
             scheme.outlineVariant.toArgb()
         )
+        assertTrue(scheme.surfaceContainerLow != androidx.compose.ui.graphics.Color.Unspecified)
+        assertTrue(scheme.surfaceContainerHigh != androidx.compose.ui.graphics.Color.Unspecified)
+        assertTrue(scheme.tertiaryContainer != androidx.compose.ui.graphics.Color.Unspecified)
     }
 
     private fun themeColour(context: Context, attribute: Int): Int {

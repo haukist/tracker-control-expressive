@@ -162,26 +162,22 @@ public class ApplicationEx extends Application {
             @Override
             public void onActivityCreated(@NonNull Activity activity, @Nullable Bundle savedInstanceState) {
                 if (activity instanceof ComponentActivity) {
-                    int statusBarColor = ContextCompat.getColor(activity, R.color.colorPrimaryDark);
-                    // SystemBarStyle.dark() is critical: without it, EdgeToEdge defaults to
-                    // transparent, and M3's light theme produces white-on-white status bar icons.
-                    EdgeToEdge.enable(
-                            (ComponentActivity) activity,
-                            SystemBarStyle.dark(statusBarColor),
-                            SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT));
-
-                    // Activities with windowActionBar=true use the theme's ActionBar
-                    // and need manual inset handling: set the window background to the
-                    // status bar color (visible through the transparent status bar on
-                    // API 35+) and pad android.R.id.content to avoid drawing behind it.
-                    // Activities with their own Toolbar (NoActionBar themes) handle
-                    // insets themselves via AppBarLayout padding.
+                    // Activities with windowActionBar=true (including legacy NetGuard
+                    // screens) use the theme's red ActionBar and need manual inset
+                    // handling + dark status bar style. NoActionBar Compose screens
+                    // manage their own TopAppBar and adapt to light/dark/Dynamic Color.
                     android.content.res.TypedArray a = activity.obtainStyledAttributes(
                             new int[]{androidx.appcompat.R.attr.windowActionBar});
                     boolean hasThemeActionBar = a.getBoolean(0, false);
                     a.recycle();
 
+                    int statusBarColor = ContextCompat.getColor(activity, R.color.colorPrimaryDark);
                     if (hasThemeActionBar) {
+                        EdgeToEdge.enable(
+                                (ComponentActivity) activity,
+                                SystemBarStyle.dark(statusBarColor),
+                                SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT));
+
                         activity.getWindow().setBackgroundDrawable(new ColorDrawable(statusBarColor));
 
                         android.widget.FrameLayout content = activity.findViewById(android.R.id.content);
@@ -199,6 +195,11 @@ public class ApplicationEx extends Application {
                             }
                             return insets;
                         });
+                    } else {
+                        EdgeToEdge.enable(
+                                (ComponentActivity) activity,
+                                SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT),
+                                SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT));
                     }
                 }
             }
