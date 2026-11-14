@@ -858,4 +858,6 @@ Sincerely,\n\n]]></string>
     <string name="log_connection_wifi">Wi-Fi</string>
     <string name="log_connection_other">Other network</string>
     <string name="log_screen_on">Screen on</string>
+    <string name="setting_dynamic_color">Dynamic color</string>
+    <string name="summary_dynamic_color">Use wallpaper-derived Material You colors (Android 12+)</string>
 </resources>

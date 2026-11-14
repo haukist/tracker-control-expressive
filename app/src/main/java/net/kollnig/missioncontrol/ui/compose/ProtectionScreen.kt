@@ -148,7 +148,10 @@ object ProtectionScreen {
     fun install(
         composeView: ComposeView,
         initialModel: ProtectionScreenModel,
-        callbacks: ProtectionScreenCallbacks
+        callbacks: ProtectionScreenCallbacks,
+        title: String,
+        subtitle: String,
+        onNavigateUp: Runnable
     ): ProtectionScreenController {
         val state = mutableStateOf(initialModel)
         composeView.setViewCompositionStrategy(
@@ -156,23 +159,46 @@ object ProtectionScreen {
         )
         composeView.setContent {
             TrackerControlTheme {
-                ProtectionScreenContent(state.value, callbacks)
+                ProtectionScreenContent(
+                    model = state.value,
+                    callbacks = callbacks,
+                    title = title,
+                    subtitle = subtitle,
+                    onNavigateUp = { onNavigateUp.run() }
+                )
             }
         }
         return ProtectionScreenController(state)
     }
 }
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 internal fun ProtectionScreenContent(
     model: ProtectionScreenModel,
-    callbacks: ProtectionScreenCallbacks
+    callbacks: ProtectionScreenCallbacks,
+    title: String = "",
+    subtitle: String = "",
+    onNavigateUp: () -> Unit = {}
 ) {
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-    ) {
+    androidx.compose.material3.Scaffold(
+        topBar = {
+            if (title.isNotEmpty()) {
+                ExpressiveTopAppBar(
+                    title = title,
+                    subtitle = subtitle.takeIf { it.isNotEmpty() },
+                    onNavigateUp = onNavigateUp
+                )
+            }
+        },
+        containerColor = MaterialTheme.colorScheme.background
+    ) { innerPadding ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .background(MaterialTheme.colorScheme.background)
+        ) {
         model.pause?.let { pause ->
             item(key = "pause") {
                 PauseContent(pause, callbacks::onPauseResume)
@@ -266,6 +292,7 @@ internal fun ProtectionScreenContent(
                 }
             }
         }
+    }
     }
 }
 

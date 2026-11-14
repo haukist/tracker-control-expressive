@@ -1,35 +1,47 @@
+/*
+ * TrackerControl is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * TrackerControl is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with TrackerControl. If not, see <http://www.gnu.org/licenses/>.
+ *
+ * Copyright © 2019–2026 Konrad Kollnig
+ */
+
 package net.kollnig.missioncontrol;
 
 import android.Manifest;
-import android.annotation.SuppressLint;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.content.DialogInterface;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.text.Html;
 import android.text.TextUtils;
 import android.util.Log;
-import android.view.LayoutInflater;
-import android.view.View;
-import android.view.ViewGroup;
-import android.widget.Button;
-import android.widget.RadioButton;
-import android.widget.RadioGroup;
-import android.widget.TextView;
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.compose.ui.platform.ComposeView;
 import androidx.core.app.ActivityCompat;
-import androidx.core.graphics.Insets;
-import androidx.core.view.ViewCompat;
-import androidx.core.view.WindowInsetsCompat;
 import androidx.preference.PreferenceManager;
-import androidx.recyclerview.widget.RecyclerView;
-import androidx.viewpager2.widget.ViewPager2;
 
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+
+import net.kollnig.missioncontrol.data.BlockingMode;
+import net.kollnig.missioncontrol.ui.compose.OnboardingScreen;
+import net.kollnig.missioncontrol.ui.compose.OnboardingScreenCallbacks;
+import net.kollnig.missioncontrol.ui.compose.OnboardingScreenController;
+import net.kollnig.missioncontrol.ui.compose.OnboardingScreenModel;
+import net.kollnig.missioncontrol.ui.compose.OnboardingSlideUi;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -37,39 +49,15 @@ import java.util.List;
 import eu.faircode.netguard.ActivityMain;
 import eu.faircode.netguard.ServiceSinkhole;
 import eu.faircode.netguard.Util;
-import net.kollnig.missioncontrol.data.BlockingMode;
 
 public class ActivityOnboarding extends AppCompatActivity {
-
-    /**
-     * Bump this to re-trigger onboarding for existing users.
-     * 1 = original onboarding (pre-2026 Q2)
-     * 2 = blocking modes, SNI privacy fix, performance improvements
-     */
     public static final int ONBOARDING_VERSION = 2;
 
-    private ViewPager2 viewPager;
-    private Button btnNext;
-    private Button btnPrevious;
-    private List<Slide> slides = new ArrayList<>();
-    private OnboardingAdapter adapter;
-    private boolean slidesInitialized = false;
-
-    /**
-     * Adds the bottom system-bar (navigation bar) inset to a view's existing
-     * bottom margin, so it isn't clipped on edge-to-edge displays.
-     */
-    private void addBottomInsetMargin(View v) {
-        ViewGroup.MarginLayoutParams initialParams = (ViewGroup.MarginLayoutParams) v.getLayoutParams();
-        final int initialBottomMargin = initialParams.bottomMargin;
-        ViewCompat.setOnApplyWindowInsetsListener(v, (view, insets) -> {
-            Insets sysBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            ViewGroup.MarginLayoutParams params = (ViewGroup.MarginLayoutParams) view.getLayoutParams();
-            params.bottomMargin = initialBottomMargin + sysBars.bottom;
-            view.setLayoutParams(params);
-            return insets;
-        });
-    }
+    private OnboardingScreenController screenController;
+    private boolean includeWhatsNew = false;
+    private boolean includeVpnSlide = false;
+    private boolean includeLockdownSlide = false;
+    private boolean includeNotifySlide = false;
 
     private boolean isLockdownEnabled() {
         try {
@@ -83,399 +71,246 @@ public class ActivityOnboarding extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_onboarding);
 
-        viewPager = findViewById(R.id.viewPager);
-        btnNext = findViewById(R.id.btnNext);
-        btnPrevious = findViewById(R.id.btnPrevious);
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        int seenVersion = prefs.getInt("onboarding_version", 0);
+        includeWhatsNew = seenVersion > 0 && seenVersion < ONBOARDING_VERSION;
+        includeVpnSlide = VpnService.prepare(this) != null;
+        includeLockdownSlide = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P;
+        includeNotifySlide = Build.VERSION.SDK_INT >= 33 && !Util.canNotify(this);
 
-        // Consume the bottom system-bar inset as extra margin so the Next/
-        // Previous buttons aren't clipped by the gesture/navigation bar on
-        // edge-to-edge displays.
-        addBottomInsetMargin(btnNext);
-        addBottomInsetMargin(btnPrevious);
+        ComposeView composeView = new ComposeView(this);
+        setContentView(composeView);
 
-        BlockingMode.enforcePlayStoreMode(this);
-        setupSlides();
-
-        btnNext.setOnClickListener(v -> {
-            if (viewPager.getCurrentItem() < adapter.getItemCount() - 1) {
-                int position = viewPager.getCurrentItem();
-                Slide currentSlide = slides.get(position);
-
-                Runnable next = () -> viewPager.setCurrentItem(position + 1);
-
-                if (currentSlide.warningResId != 0) {
-                    Util.areYouSure(this, currentSlide.warningResId, () -> next.run());
-                } else {
-                    next.run();
-                }
-            } else {
-                finishOnboarding();
-            }
-        });
-
-        btnPrevious.setOnClickListener(v -> {
-            if (viewPager.getCurrentItem() > 0) {
-                viewPager.setCurrentItem(viewPager.getCurrentItem() - 1);
-            }
-        });
-
-        viewPager.registerOnPageChangeCallback(new ViewPager2.OnPageChangeCallback() {
+        screenController = OnboardingScreen.install(composeView, new OnboardingScreenCallbacks() {
             @Override
-            public void onPageSelected(int position) {
-                updateButtons(position);
+            public void onSlideAction(int titleResId) {
+                handleSlideAction(titleResId);
+            }
+
+            @Override
+            public void onSelectBlockingOption(@NonNull String option) {
+                applyBlockingOption(option);
+                renderSlides();
+            }
+
+            @Override
+            public void onNextOrFinish(int currentPage, @NonNull OnboardingSlideUi slide) {
+                int lastIndex = screenController.getModel().getSlides().size() - 1;
+                if (currentPage < lastIndex) {
+                    Runnable advance = () -> screenController.requestPage(currentPage + 1);
+                    if (slide.getWarningResId() != 0) {
+                        Util.areYouSure(ActivityOnboarding.this, slide.getWarningResId(), advance::run);
+                    } else {
+                        advance.run();
+                    }
+                } else {
+                    finishOnboarding();
+                }
             }
         });
+
+        renderSlides();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        refreshSlides();
+        renderSlides();
     }
 
-    // Slide state is recomputed as a whole, so no exact changed range exists.
-    @SuppressLint("NotifyDataSetChanged")
-    private void setupSlides() {
-        if (slidesInitialized) {
+    private void renderSlides() {
+        if (screenController == null)
             return;
-        }
 
-        slides.clear();
+        List<OnboardingSlideUi> slides = new ArrayList<>();
 
-        // 1. Welcome
-        slides.add(new Slide(
+        slides.add(new OnboardingSlideUi(
                 R.string.onboarding_welcome_title,
-                getText(R.string.onboarding_welcome_title),
-                getText(R.string.onboarding_welcome_desc),
+                getString(R.string.onboarding_welcome_title),
+                getText(R.string.onboarding_welcome_desc).toString(),
                 R.drawable.ic_rocket2,
                 null,
-                null));
+                false,
+                0,
+                false));
 
-        // 1b. What's New (for returning users who haven't seen the latest onboarding)
-        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
-        int seenVersion = prefs.getInt("onboarding_version", 0);
-        if (seenVersion > 0 && seenVersion < ONBOARDING_VERSION) {
-            slides.add(new Slide(
+        if (includeWhatsNew) {
+            slides.add(new OnboardingSlideUi(
                     R.string.onboarding_whatsnew_title,
-                    getText(R.string.onboarding_whatsnew_title),
-                    getText(R.string.onboarding_whatsnew_desc),
+                    getString(R.string.onboarding_whatsnew_title),
+                    getText(R.string.onboarding_whatsnew_desc).toString(),
                     R.drawable.ic_rocket2,
                     null,
-                    null));
+                    false,
+                    0,
+                    false));
         }
 
-        // 2. Blocking Mode Selection
-        slides.add(new Slide(
+        slides.add(new OnboardingSlideUi(
                 R.string.onboarding_blockingmode_title,
-                getText(R.string.onboarding_blockingmode_title),
-                getText(R.string.onboarding_blockingmode_desc),
+                getString(R.string.onboarding_blockingmode_title),
+                getText(R.string.onboarding_blockingmode_desc).toString(),
                 R.drawable.ic_rocket2,
-                null, 0, null, true));
+                null,
+                false,
+                0,
+                true));
 
-        // 3. VPN (Only if not already prepared)
-        boolean vpnPrepared = VpnService.prepare(this) == null;
-        if (!vpnPrepared) {
-            slides.add(new Slide(
+        if (includeVpnSlide) {
+            boolean vpnPrepared = VpnService.prepare(this) == null;
+            slides.add(new OnboardingSlideUi(
                     R.string.onboarding_vpn_title,
-                    getText(R.string.onboarding_vpn_title),
-                    getText(R.string.onboarding_vpn_desc),
+                    getString(R.string.onboarding_vpn_title),
+                    getText(R.string.onboarding_vpn_desc).toString(),
                     R.drawable.lockdown,
-                    getString(R.string.onboarding_vpn_action),
-                    R.string.onboarding_vpn_sure,
-                    null)); // Listener set in refreshSlides
+                    vpnPrepared ? getString(R.string.onboarding_action_granted)
+                            : getString(R.string.onboarding_vpn_action),
+                    !vpnPrepared,
+                    vpnPrepared ? 0 : R.string.onboarding_vpn_sure,
+                    false));
         }
 
-        // 3. VPN Lockdown Warning (Android P+)
-        // Always show this slide - we can only check lockdown status after VPN is
-        // enabled (and only on Q+),
-        // so we check it dynamically in refreshSlides() or just show the button on P
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            slides.add(new Slide(
-                    R.string.onboarding_lockdown_title,
-                    getText(R.string.onboarding_lockdown_title),
-                    getText(R.string.onboarding_lockdown_desc),
-                    R.drawable.lockdown,
-                    getString(R.string.onboarding_lockdown_action),
-                    R.string.onboarding_lockdown_sure,
-                    null)); // Listener set in refreshSlides
-        }
-
-        // 4. Notifications (Android 13+)
-        if (Build.VERSION.SDK_INT >= 33) {
-            boolean canNotify = Util.canNotify(this);
-            if (!canNotify) {
-                slides.add(new Slide(
-                        R.string.onboarding_notify_title,
-                        getText(R.string.onboarding_notify_title),
-                        getText(R.string.onboarding_notify_desc),
-                        R.drawable.twotone_notifications_24,
-                        getString(R.string.onboarding_notify_action),
-                        R.string.onboarding_notify_sure,
-                        null));
+        if (includeLockdownSlide) {
+            String actionText;
+            boolean actionEnabled;
+            int warningResId;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                boolean lockdownEnabled = isLockdownEnabled();
+                actionText = lockdownEnabled ? getString(R.string.onboarding_lockdown_action)
+                        : getString(R.string.onboarding_action_disabled);
+                actionEnabled = lockdownEnabled;
+                warningResId = lockdownEnabled ? R.string.onboarding_lockdown_sure : 0;
+            } else {
+                actionText = getString(R.string.onboarding_lockdown_action);
+                actionEnabled = true;
+                warningResId = 0;
             }
+            slides.add(new OnboardingSlideUi(
+                    R.string.onboarding_lockdown_title,
+                    getString(R.string.onboarding_lockdown_title),
+                    getText(R.string.onboarding_lockdown_desc).toString(),
+                    R.drawable.lockdown,
+                    actionText,
+                    actionEnabled,
+                    warningResId,
+                    false));
         }
 
-        // 5. Battery Optimization - Disabled for now to simplify onboarding
-        // boolean batteryOptimized = Util.batteryOptimizing(this);
-        // if (batteryOptimized) {
-        // slides.add(new Slide(
-        // R.string.onboarding_battery_title,
-        // getText(R.string.onboarding_battery_title),
-        // getText(R.string.onboarding_battery_desc),
-        // R.drawable.ic_scan_code,
-        // getString(R.string.onboarding_battery_action),
-        // R.string.onboarding_battery_sure,
-        // null));
-        // }
+        if (includeNotifySlide) {
+            boolean canNotify = Util.canNotify(this);
+            slides.add(new OnboardingSlideUi(
+                    R.string.onboarding_notify_title,
+                    getString(R.string.onboarding_notify_title),
+                    getText(R.string.onboarding_notify_desc).toString(),
+                    R.drawable.twotone_notifications_24,
+                    canNotify ? getString(R.string.onboarding_action_granted)
+                            : getString(R.string.onboarding_notify_action),
+                    !canNotify,
+                    canNotify ? 0 : R.string.onboarding_notify_sure,
+                    false));
+        }
 
-        // 6. Unrestricted Network - Disabled for now to simplify onboarding
-        // if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-        // boolean dataSaving = Util.dataSaving(this);
-        // if (dataSaving) {
-        // slides.add(new Slide(
-        // R.string.onboarding_network_title,
-        // getText(R.string.onboarding_network_title),
-        // getText(R.string.onboarding_network_desc),
-        // R.drawable.wifi,
-        // getString(R.string.onboarding_network_action),
-        // R.string.onboarding_network_sure,
-        // null));
-        // }
-        // }
-
-        // 7. Private DNS - no longer asked about: DoT (port 853) is blocked by
-        // default, so Android falls back to plaintext DNS on its own.
-
-        // 8. Timeline
-        slides.add(new Slide(
+        slides.add(new OnboardingSlideUi(
                 R.string.onboarding_timeline_title,
-                getText(R.string.onboarding_timeline_title),
-                getText(R.string.onboarding_timeline_desc),
+                getString(R.string.onboarding_timeline_title),
+                getText(R.string.onboarding_timeline_desc).toString(),
                 R.drawable.ic_history,
                 null,
-                null));
+                false,
+                0,
+                false));
 
-        // 9. Secure DNS - Disabled for now to simplify onboarding
-        // final SharedPreferences prefsDns =
-        // PreferenceManager.getDefaultSharedPreferences(this);
-        // boolean dohEnabled = prefsDns.getBoolean("doh_enabled", false);
-        // if (!dohEnabled) {
-        // slides.add(new Slide(
-        // R.string.onboarding_dns_title,
-        // getText(R.string.onboarding_dns_title),
-        // getText(R.string.onboarding_dns_desc),
-        // R.drawable.lockdown,
-        // getString(R.string.onboarding_dns_action),
-        // null));
-        // }
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        boolean researchPreset = prefs.getBoolean("log_logcat", false);
+        String currentMode = BlockingMode.getMode(this);
+        String selectedOption;
+        if (researchPreset)
+            selectedOption = "research";
+        else if (BlockingMode.MODE_MINIMAL.equals(currentMode))
+            selectedOption = "minimal";
+        else if (BlockingMode.MODE_STRICT.equals(currentMode))
+            selectedOption = "strict";
+        else
+            selectedOption = "standard";
 
-        slidesInitialized = true;
-
-        if (adapter == null) {
-            adapter = new OnboardingAdapter(slides);
-            viewPager.setAdapter(adapter);
-        } else {
-            adapter.notifyDataSetChanged();
-        }
-
-        updateButtons(viewPager.getCurrentItem());
+        screenController.update(new OnboardingScreenModel(
+                slides,
+                selectedOption,
+                Util.isPlayStoreInstall(this)));
     }
 
-    // Refreshing onboarding recomputes every slide; the exact changed range is
-    // not available to this stateful pager adapter.
-    @SuppressLint("NotifyDataSetChanged")
-    private void refreshSlides() {
-        if (!slidesInitialized) {
-            setupSlides();
-            return;
-        }
-
-        for (Slide slide : slides) {
-            // 2. VPN
-            if (slide.titleResId == R.string.onboarding_vpn_title) {
-                boolean vpnPrepared = VpnService.prepare(this) == null;
-                slide.actionButtonText = vpnPrepared ? getString(R.string.onboarding_action_granted)
-                        : getString(R.string.onboarding_vpn_action);
-                slide.warningResId = vpnPrepared ? 0 : R.string.onboarding_vpn_sure;
-                if (vpnPrepared) {
-                    slide.actionListener = null;
-                } else {
-                    slide.actionListener = v -> {
-                        // Proactively detect another Always-on VPN on Android < S,
-                        // where the setting is still readable.
-                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-                            try {
-                                String alwaysOn = Settings.Secure.getString(
-                                        getContentResolver(), "always_on_vpn_app");
-                                if (!TextUtils.isEmpty(alwaysOn)
-                                        && !getPackageName().equals(alwaysOn)) {
-                                    showAlwaysOnVpnBlockedDialog();
-                                    return;
-                                }
-                            } catch (Throwable ex) {
-                                Log.e("Onboarding", ex.toString());
-                            }
-                        }
-                        try {
-                            Intent intent = VpnService.prepare(ActivityOnboarding.this);
-                            if (intent != null) {
-                                startActivityForResult(intent, 0);
-                            }
-                        } catch (Throwable ex) {
-                            Log.e("Onboarding", ex.toString());
-                            showAlwaysOnVpnBlockedDialog();
-                        }
-                    };
-                }
-            }
-
-            // 4. Notifications
-            if (slide.titleResId == R.string.onboarding_notify_title) {
-                boolean canNotify = Util.canNotify(this);
-                slide.actionButtonText = canNotify ? getString(R.string.onboarding_action_granted)
-                        : getString(R.string.onboarding_notify_action);
-                slide.warningResId = canNotify ? 0 : R.string.onboarding_notify_sure;
-                if (canNotify) {
-                    slide.actionListener = null;
-                } else {
-                    slide.actionListener = v -> {
-                        ActivityCompat.requestPermissions(ActivityOnboarding.this,
-                                // API-gated request; the permission name is an inlined constant.
-                                //noinspection InlinedApi
-                                new String[] { Manifest.permission.POST_NOTIFICATIONS }, 1);
-                    };
-                }
-            }
-
-            // 5. Battery Optimization - Disabled for now
-            // if (slide.titleResId == R.string.onboarding_battery_title) {
-            // boolean batteryOptimized = Util.batteryOptimizing(this);
-            // slide.actionButtonText = batteryOptimized ?
-            // getString(R.string.onboarding_battery_action)
-            // : getString(R.string.onboarding_action_unrestricted);
-            // slide.warningResId = batteryOptimized ? R.string.onboarding_battery_sure : 0;
-            // slide.actionListener = v -> {
-            // if (batteryOptimized) {
-            // try {
-            // Intent intent = new
-            // Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
-            // .setData(Uri.parse("package:" + getPackageName()));
-            // startActivity(intent);
-            // } catch (Throwable ex) {
-            // startActivity(new
-            // Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
-            // }
-            // }
-            // };
-            // }
-
-            // 6. Unrestricted Network - Disabled for now
-            // if (slide.titleResId == R.string.onboarding_network_title) {
-            // boolean dataSaving = Util.dataSaving(this);
-            // slide.actionButtonText = dataSaving ?
-            // getString(R.string.onboarding_network_action)
-            // : getString(R.string.onboarding_action_unrestricted);
-            // slide.warningResId = dataSaving ? R.string.onboarding_network_sure : 0;
-            // slide.actionListener = v -> {
-            // if (dataSaving) {
-            // Intent intent = new
-            // Intent(Settings.ACTION_IGNORE_BACKGROUND_DATA_RESTRICTIONS_SETTINGS,
-            // Uri.parse("package:" + getPackageName()));
-            // if (intent.resolveActivity(getPackageManager()) != null) {
-            // startActivity(intent);
-            // }
-            // }
-            // };
-            // }
-
-            // Lockdown
-            if (slide.titleResId == R.string.onboarding_lockdown_title) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    boolean lockdownEnabled = isLockdownEnabled();
-                    slide.actionButtonText = lockdownEnabled ? getString(R.string.onboarding_lockdown_action)
-                            : getString(R.string.onboarding_action_disabled);
-                    slide.warningResId = lockdownEnabled ? R.string.onboarding_lockdown_sure : 0;
-                    if (lockdownEnabled) {
-                        slide.actionListener = v -> {
-                            try {
-                                // Android exposes this settings action from API 24; the string is
-                                // intentionally inlined for the API 23 fallback path.
-                                //noinspection InlinedApi
-                                Intent intent = new Intent(Settings.ACTION_VPN_SETTINGS);
-                                startActivity(intent);
-                            } catch (Throwable ex) {
-                                Log.e("Onboarding", ex.toString());
-                            }
-                        };
-                    } else {
-                        slide.actionListener = null;
+    private void handleSlideAction(int titleResId) {
+        if (titleResId == R.string.onboarding_vpn_title) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                try {
+                    String alwaysOn = Settings.Secure.getString(
+                            getContentResolver(), "always_on_vpn_app");
+                    if (!TextUtils.isEmpty(alwaysOn)
+                            && !getPackageName().equals(alwaysOn)) {
+                        showAlwaysOnVpnBlockedDialog();
+                        return;
                     }
-                } else {
-                    // Android 9 (Pie): Cannot check status, so always show button and no warning
-                    slide.actionButtonText = getString(R.string.onboarding_lockdown_action);
-                    slide.warningResId = 0;
-                    slide.actionListener = v -> {
-                        try {
-                            // Android exposes this settings action from API 24; the string is
-                            // intentionally inlined for the API 23 fallback path.
-                            //noinspection InlinedApi
-                            Intent intent = new Intent(Settings.ACTION_VPN_SETTINGS);
-                            startActivity(intent);
-                        } catch (Throwable ex) {
-                            Log.e("Onboarding", ex.toString());
-                        }
-                    };
+                } catch (Throwable ex) {
+                    Log.e("Onboarding", ex.toString());
                 }
             }
-
-            // 8. Secure DNS - Disabled for now
-            // if (slide.titleResId == R.string.onboarding_dns_title) {
-            // final SharedPreferences prefsDns =
-            // PreferenceManager.getDefaultSharedPreferences(this);
-            // boolean dohEnabled = prefsDns.getBoolean("doh_enabled", false);
-            // slide.actionButtonText = dohEnabled ?
-            // getString(R.string.onboarding_dns_action_disable)
-            // : getString(R.string.onboarding_dns_action);
-            // slide.actionListener = v -> {
-            // prefsDns.edit().putBoolean("doh_enabled", !dohEnabled).apply();
-            // refreshSlides(); // Refresh status
-            // };
-            // }
+            try {
+                Intent intent = VpnService.prepare(this);
+                if (intent != null) {
+                    startActivityForResult(intent, 0);
+                }
+            } catch (Throwable ex) {
+                Log.e("Onboarding", ex.toString());
+                showAlwaysOnVpnBlockedDialog();
+            }
+        } else if (titleResId == R.string.onboarding_notify_title) {
+            ActivityCompat.requestPermissions(this,
+                    //noinspection InlinedApi
+                    new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1);
+        } else if (titleResId == R.string.onboarding_lockdown_title) {
+            try {
+                //noinspection InlinedApi
+                startActivity(new Intent(Settings.ACTION_VPN_SETTINGS));
+            } catch (Throwable ex) {
+                Log.e("Onboarding", ex.toString());
+            }
         }
-
-        if (adapter != null) {
-            adapter.notifyDataSetChanged();
-        }
-        updateButtons(viewPager.getCurrentItem());
     }
 
-    private void updateButtons(int position) {
-        btnNext.setEnabled(true);
-        btnNext.setAlpha(1.0f);
-        viewPager.setUserInputEnabled(true);
+    private void applyBlockingOption(String option) {
+        String mode = BlockingMode.MODE_STANDARD;
+        boolean enableSni = false;
+        boolean enableAdbLogging = false;
+        boolean enableDotBlocking = true;
 
-        if (position == 0) {
-            btnPrevious.setVisibility(View.INVISIBLE);
-        } else {
-            btnPrevious.setVisibility(View.VISIBLE);
+        if ("minimal".equals(option))
+            mode = BlockingMode.MODE_MINIMAL;
+        else if ("strict".equals(option))
+            mode = BlockingMode.MODE_STRICT;
+        else if ("research".equals(option)) {
+            mode = BlockingMode.MODE_MINIMAL;
+            enableSni = true;
+            enableAdbLogging = true;
+            enableDotBlocking = false;
         }
 
-        if (position == adapter.getItemCount() - 1) {
-            btnNext.setText(R.string.title_finish);
-        } else {
-            btnNext.setText(R.string.title_next);
-        }
+        PreferenceManager.getDefaultSharedPreferences(this)
+                .edit()
+                .putString(BlockingMode.PREF_BLOCKING_MODE, mode)
+                .putBoolean("filter", true)
+                .putBoolean("sni_enabled", enableSni)
+                .putBoolean("log_logcat", enableAdbLogging)
+                .putBoolean("block_dot", enableDotBlocking)
+                .apply();
+
+        BlockingMode.applyMode(this);
     }
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == 0 && resultCode != RESULT_OK) {
-            // Consent was denied or silently blocked. If prepare() still returns a
-            // non-null intent, Android refused to show the consent dialog — most
-            // commonly because another app is set as Always-on VPN.
             if (VpnService.prepare(this) != null) {
                 showAlwaysOnVpnBlockedDialog();
             }
@@ -485,13 +320,10 @@ public class ActivityOnboarding extends AppCompatActivity {
     private void showAlwaysOnVpnBlockedDialog() {
         new MaterialAlertDialogBuilder(this)
                 .setTitle(R.string.onboarding_vpn_blocked_title)
-                .setMessage(android.text.Html.fromHtml(
-                        getString(R.string.onboarding_vpn_blocked_desc)))
+                .setMessage(Html.fromHtml(getString(R.string.onboarding_vpn_blocked_desc)))
                 .setPositiveButton(R.string.onboarding_vpn_blocked_action,
-                        (DialogInterface.OnClickListener) (dialog, which) -> {
+                        (dialog, which) -> {
                             try {
-                                // This is a user-facing recovery action; the settings action is
-                                // intentionally inlined for API 23 devices.
                                 //noinspection InlinedApi
                                 startActivity(new Intent(Settings.ACTION_VPN_SETTINGS));
                             } catch (Throwable ex) {
@@ -516,193 +348,5 @@ public class ActivityOnboarding extends AppCompatActivity {
 
         startActivity(new Intent(this, ActivityMain.class));
         finish();
-    }
-
-    private static class Slide {
-        int titleResId;
-        CharSequence title;
-        CharSequence desc;
-        int iconResId;
-        String actionButtonText;
-        int warningResId;
-        View.OnClickListener actionListener;
-        boolean isBlockingModeSlide;
-
-        Slide(int titleResId, CharSequence title, CharSequence desc, int iconResId, String actionButtonText,
-                View.OnClickListener actionListener) {
-            this(titleResId, title, desc, iconResId, actionButtonText, 0, actionListener, false);
-        }
-
-        Slide(int titleResId, CharSequence title, CharSequence desc, int iconResId, String actionButtonText,
-                int warningResId, View.OnClickListener actionListener) {
-            this(titleResId, title, desc, iconResId, actionButtonText, warningResId, actionListener, false);
-        }
-
-        Slide(int titleResId, CharSequence title, CharSequence desc, int iconResId, String actionButtonText,
-                int warningResId, View.OnClickListener actionListener, boolean isBlockingModeSlide) {
-            this.titleResId = titleResId;
-            this.title = title;
-            this.desc = desc;
-            this.iconResId = iconResId;
-            this.actionButtonText = actionButtonText;
-            this.warningResId = warningResId;
-            this.actionListener = actionListener;
-            this.isBlockingModeSlide = isBlockingModeSlide;
-        }
-    }
-
-    private class OnboardingAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
-        private static final int TYPE_STANDARD = 0;
-        private static final int TYPE_BLOCKING_MODE = 1;
-        private List<Slide> slides;
-
-        OnboardingAdapter(List<Slide> slides) {
-            this.slides = slides;
-        }
-
-        @Override
-        public int getItemViewType(int position) {
-            return slides.get(position).isBlockingModeSlide ? TYPE_BLOCKING_MODE : TYPE_STANDARD;
-        }
-
-        @NonNull
-        @Override
-        public RecyclerView.ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
-            if (viewType == TYPE_BLOCKING_MODE) {
-                View view = LayoutInflater.from(parent.getContext())
-                        .inflate(R.layout.item_onboarding_blocking_mode, parent, false);
-                return new BlockingModeViewHolder(view);
-            }
-            View view = LayoutInflater.from(parent.getContext()).inflate(R.layout.item_onboarding, parent, false);
-            return new SlideViewHolder(view);
-        }
-
-        @Override
-        public void onBindViewHolder(@NonNull RecyclerView.ViewHolder vh, int position) {
-            Slide slide = slides.get(position);
-
-            if (vh instanceof BlockingModeViewHolder) {
-                BlockingModeViewHolder holder = (BlockingModeViewHolder) vh;
-                holder.tvTitle.setText(slide.title);
-                holder.tvDescription.setText(slide.desc);
-                holder.ivIcon.setImageResource(slide.iconResId);
-
-                holder.rbMinimal.setText(R.string.onboarding_blockingmode_minimal_label);
-                holder.tvMinimalDesc.setText(R.string.onboarding_blockingmode_minimal_desc);
-                holder.rbStandard.setText(R.string.onboarding_blockingmode_standard_label);
-                holder.tvStandardDesc.setText(R.string.onboarding_blockingmode_standard_desc);
-                holder.rbStrict.setText(R.string.onboarding_blockingmode_strict_label);
-                holder.tvStrictDesc.setText(R.string.onboarding_blockingmode_strict_desc);
-                holder.rbResearch.setText(R.string.onboarding_blockingmode_research_label);
-                holder.tvResearchDesc.setText(R.string.onboarding_blockingmode_research_desc);
-                boolean playStoreBuild = Util.isPlayStoreInstall(holder.itemView.getContext());
-                int restrictedVisibility = playStoreBuild ? View.GONE : View.VISIBLE;
-                holder.rbStandard.setVisibility(restrictedVisibility);
-                holder.tvStandardDesc.setVisibility(restrictedVisibility);
-                holder.rbStrict.setVisibility(restrictedVisibility);
-                holder.tvStrictDesc.setVisibility(restrictedVisibility);
-
-                // Set current selection
-                SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(
-                        holder.itemView.getContext());
-                boolean researchPreset = prefs.getBoolean("log_logcat", false);
-                String currentMode = BlockingMode.getMode(holder.itemView.getContext());
-                holder.rgBlockingMode.setOnCheckedChangeListener(null);
-                if (researchPreset)
-                    holder.rbResearch.setChecked(true);
-                else if (BlockingMode.MODE_MINIMAL.equals(currentMode))
-                    holder.rbMinimal.setChecked(true);
-                else if (BlockingMode.MODE_STRICT.equals(currentMode))
-                    holder.rbStrict.setChecked(true);
-                else
-                    holder.rbStandard.setChecked(true);
-
-                holder.rgBlockingMode.setOnCheckedChangeListener((group, checkedId) -> {
-                    String mode = BlockingMode.MODE_STANDARD;
-                    boolean enableSni = false;
-                    boolean enableAdbLogging = false;
-                    boolean enableDotBlocking = true;
-
-                    if (checkedId == R.id.rbMinimal)
-                        mode = BlockingMode.MODE_MINIMAL;
-                    else if (checkedId == R.id.rbStrict)
-                        mode = BlockingMode.MODE_STRICT;
-                    else if (checkedId == R.id.rbResearch) {
-                        mode = BlockingMode.MODE_MINIMAL;
-                        enableSni = true;
-                        enableAdbLogging = true;
-                        enableDotBlocking = false;
-                    }
-
-                    PreferenceManager.getDefaultSharedPreferences(holder.itemView.getContext())
-                            .edit()
-                            .putString(BlockingMode.PREF_BLOCKING_MODE, mode)
-                            .putBoolean("filter", true)
-                            .putBoolean("sni_enabled", enableSni)
-                            .putBoolean("log_logcat", enableAdbLogging)
-                            .putBoolean("block_dot", enableDotBlocking)
-                            .apply();
-
-                    BlockingMode.applyMode(holder.itemView.getContext());
-                });
-            } else {
-                SlideViewHolder holder = (SlideViewHolder) vh;
-                holder.tvTitle.setText(slide.title);
-                holder.tvDescription.setText(slide.desc);
-                holder.ivIcon.setImageResource(slide.iconResId);
-
-                if (slide.actionButtonText != null) {
-                    holder.btnAction.setVisibility(View.VISIBLE);
-                    holder.btnAction.setText(slide.actionButtonText);
-                    holder.btnAction.setEnabled(slide.actionListener != null);
-                    holder.btnAction.setOnClickListener(slide.actionListener);
-                } else {
-                    holder.btnAction.setVisibility(View.GONE);
-                }
-            }
-        }
-
-        @Override
-        public int getItemCount() {
-            return slides.size();
-        }
-
-        class SlideViewHolder extends RecyclerView.ViewHolder {
-            TextView tvTitle, tvDescription;
-            Button btnAction;
-            android.widget.ImageView ivIcon;
-
-            SlideViewHolder(@NonNull View itemView) {
-                super(itemView);
-                tvTitle = itemView.findViewById(R.id.tvTitle);
-                tvDescription = itemView.findViewById(R.id.tvDescription);
-                btnAction = itemView.findViewById(R.id.btnAction);
-                ivIcon = itemView.findViewById(R.id.ivIcon);
-            }
-        }
-
-        class BlockingModeViewHolder extends RecyclerView.ViewHolder {
-            TextView tvTitle, tvDescription;
-            android.widget.ImageView ivIcon;
-            RadioGroup rgBlockingMode;
-            RadioButton rbMinimal, rbStandard, rbStrict, rbResearch;
-            TextView tvMinimalDesc, tvStandardDesc, tvStrictDesc, tvResearchDesc;
-
-            BlockingModeViewHolder(@NonNull View itemView) {
-                super(itemView);
-                tvTitle = itemView.findViewById(R.id.tvTitle);
-                tvDescription = itemView.findViewById(R.id.tvDescription);
-                ivIcon = itemView.findViewById(R.id.ivIcon);
-                rgBlockingMode = itemView.findViewById(R.id.rgBlockingMode);
-                rbMinimal = itemView.findViewById(R.id.rbMinimal);
-                rbStandard = itemView.findViewById(R.id.rbStandard);
-                rbStrict = itemView.findViewById(R.id.rbStrict);
-                rbResearch = itemView.findViewById(R.id.rbResearch);
-                tvMinimalDesc = itemView.findViewById(R.id.tvMinimalDesc);
-                tvStandardDesc = itemView.findViewById(R.id.tvStandardDesc);
-                tvStrictDesc = itemView.findViewById(R.id.tvStrictDesc);
-                tvResearchDesc = itemView.findViewById(R.id.tvResearchDesc);
-            }
-        }
     }
 }

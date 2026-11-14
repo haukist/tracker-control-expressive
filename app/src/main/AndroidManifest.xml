@@ -221,7 +221,8 @@
             android:configChanges="orientation|screenSize"
             android:exported="false"
             android:label="@string/setting_wg_profile_scan"
-            android:parentActivityName="net.kollnig.missioncontrol.ActivityWireGuardProfiles">
+            android:parentActivityName="net.kollnig.missioncontrol.ActivityWireGuardProfiles"
+            android:theme="@style/AppThemeRed.NoActionBar">
             <meta-data
                 android:name="android.support.PARENT_ACTIVITY"
                 android:value="net.kollnig.missioncontrol.ActivityWireGuardProfiles" />
