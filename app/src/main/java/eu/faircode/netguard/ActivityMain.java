@@ -28,6 +28,7 @@ import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.AlarmManager;
 import android.app.PendingIntent;
+import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -41,11 +42,16 @@ import android.net.VpnService;
 import android.os.AsyncTask;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.util.Pair;
 import android.provider.Settings;
 import android.text.TextUtils;
 import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
 import android.widget.Toast;
 
 import androidx.activity.OnBackPressedCallback;
@@ -144,7 +150,15 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
     private Boolean lastLocalNetworkGrant = null;
     private int privateDnsWarningState = ServiceSinkhole.PRIVATE_DNS_WARNING_NONE;
     private int privateDnsWarningQueryGeneration = 0;
+    private int rulesUpdateGeneration = 0;
     private boolean autofillUnavailable = false;
+    private final Handler uiHandler = new Handler(Looper.getMainLooper());
+    private final Runnable debouncedAccessRender = this::renderMainScreen;
+    private String cachedCopyright = "";
+    private boolean cachedShowInvite = false;
+    private boolean cachedShowSupport = false;
+    private boolean cachedEnableMoreApps = false;
+    private boolean cachedShowRate = false;
 
     @Override
     public Object getSystemService(@NonNull String name) {
@@ -217,11 +231,35 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
         Util.setTheme(this);
         super.onCreate(savedInstanceState);
 
+        FrameLayout rootFrame = new FrameLayout(this);
         ComposeView root = new ComposeView(this);
         root.setId(R.id.compose_main);
-        setContentView(root);
+        rootFrame.addView(root, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+
+        FragmentContainerView timelineContainer = new FragmentContainerView(this);
+        timelineContainer.setId(R.id.timelineContainer);
+        timelineContainer.setVisibility(View.GONE);
+        rootFrame.addView(timelineContainer, new FrameLayout.LayoutParams(0, 0));
+
+        FragmentContainerView vpnContainer = new FragmentContainerView(this);
+        vpnContainer.setId(R.id.vpnContainer);
+        vpnContainer.setVisibility(View.GONE);
+        rootFrame.addView(vpnContainer, new FrameLayout.LayoutParams(0, 0));
+
+        setContentView(rootFrame);
 
         running = true;
+
+        PackageManager pm = getPackageManager();
+        cachedCopyright = getString(R.string.app_copyright).replaceFirst(
+                "(?<=2019[–-])20\\d{2}",
+                new SimpleDateFormat("yyyy", Locale.US).format(new Date()));
+        cachedShowInvite = getIntentInvite(this).resolveActivity(pm) != null;
+        cachedShowSupport = getIntentSupport(this).resolveActivity(pm) != null;
+        cachedEnableMoreApps = getIntentApps(this).resolveActivity(pm) != null;
+        cachedShowRate = getIntentRate(this).resolveActivity(pm) != null;
 
         boolean enabled = prefs.getBoolean("enabled", false);
         final boolean initialized = prefs.getBoolean("initialized", false);
@@ -236,11 +274,6 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
 
         networkActive = Util.isNetworkActive(this);
         meteredActive = Util.isMeteredNetwork(this);
-
-        FragmentContainerView timelineContainer = new FragmentContainerView(this);
-        timelineContainer.setId(R.id.timelineContainer);
-        FragmentContainerView vpnContainer = new FragmentContainerView(this);
-        vpnContainer.setId(R.id.vpnContainer);
 
         if (savedInstanceState == null) {
             selectedTab = MainTabs.TIMELINE;
@@ -263,6 +296,13 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override
             public void handleOnBackPressed() {
+                if (searchOpen) {
+                    searchOpen = false;
+                    searchQuery = "";
+                    getIntent().removeExtra(EXTRA_SEARCH);
+                    renderMainScreen();
+                    return;
+                }
                 if (selectedTab != MainTabs.APPS) {
                     selectTab(MainTabs.APPS);
                     return;
@@ -411,9 +451,17 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
             }
 
             @Override
-            public void onOpenPrivateDnsHelp() {
+            public void onOpenPrivateDnsBlockedHelp() {
+                Intent settings = new Intent(Settings.ACTION_WIRELESS_SETTINGS);
+                if (settings.resolveActivity(getPackageManager()) == null)
+                    settings = new Intent(Settings.ACTION_WIFI_SETTINGS);
+                startActivity(settings);
+            }
+
+            @Override
+            public void onOpenPrivateDnsBypassHelp() {
                 Intent settings;
-                if (prefs.getBoolean("doh_enabled", false))
+                if (privateDnsWarningState == ServiceSinkhole.PRIVATE_DNS_WARNING_ALLOWED_DOT)
                     settings = new Intent(ActivityMain.this, ActivitySettings.class);
                 else {
                     settings = new Intent(Settings.ACTION_WIRELESS_SETTINGS);
@@ -511,12 +559,18 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
 
             @Override
             public void onRateApp() {
-                startActivity(getIntentRate(ActivityMain.this));
+                try {
+                    startActivity(getIntentRate(ActivityMain.this));
+                } catch (ActivityNotFoundException ignored) {
+                }
             }
 
             @Override
             public void onOpenUrl(@NonNull String url) {
-                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+                try {
+                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+                } catch (ActivityNotFoundException ignored) {
+                }
             }
         };
     }
@@ -635,6 +689,7 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
         if (Util.hasXposed(this))
             return;
 
+        uiHandler.removeCallbacks(debouncedAccessRender);
         DatabaseHelper.getInstance(this).removeAccessChangedListener(accessChangedListener);
     }
 
@@ -886,7 +941,8 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
     private final DatabaseHelper.AccessChangedListener accessChangedListener = new DatabaseHelper.AccessChangedListener() {
         @Override
         public void onChanged() {
-            runOnUiThread(() -> renderMainScreen());
+            uiHandler.removeCallbacks(debouncedAccessRender);
+            uiHandler.postDelayed(debouncedAccessRender, 500);
         }
     };
 
@@ -971,22 +1027,35 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
     @SuppressLint("StaticFieldLeak")
     private void updateApplicationList(final String search) {
         Log.i(TAG, "Update search=" + search);
+        final int generation = ++rulesUpdateGeneration;
         refreshingApps = true;
         renderMainScreen();
 
-        new AsyncTask<Object, Object, List<Rule>>() {
+        new AsyncTask<Object, Object, Pair<List<Rule>, List<Rule>>>() {
             @Override
-            protected List<Rule> doInBackground(Object... arg) {
-                return Rule.getRules(false, true, ActivityMain.this);
+            protected Pair<List<Rule>, List<Rule>> doInBackground(Object... arg) {
+                List<Rule> rules = Rule.getRules(false, true, ActivityMain.this);
+                List<Rule> pool = new ArrayList<>(rules);
+                Set<String> present = new HashSet<>();
+                for (Rule rule : rules)
+                    present.add(rule.packageName);
+                try {
+                    for (Rule stub : Rule.getSearchStubs(getApplicationContext()))
+                        if (!present.contains(stub.packageName))
+                            pool.add(stub);
+                } catch (Throwable ex) {
+                    Log.e(TAG, ex.toString() + "\n" + Log.getStackTraceString(ex));
+                }
+                return new Pair<>(rules, pool);
             }
 
             @Override
-            protected void onPostExecute(List<Rule> result) {
-                if (running) {
+            protected void onPostExecute(Pair<List<Rule>, List<Rule>> result) {
+                if (running && generation == rulesUpdateGeneration) {
                     allRules.clear();
-                    if (result != null)
-                        allRules.addAll(result);
-                    searchPool = null;
+                    if (result != null && result.first != null)
+                        allRules.addAll(result.first);
+                    searchPool = result != null ? result.second : null;
                     refreshingApps = false;
                     if (search != null) {
                         selectedTab = MainTabs.APPS;
@@ -1052,7 +1121,7 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
         }
 
         MainBannerState banners = new MainBannerState(
-                !enabled,
+                false,
                 prefs.getBoolean("log_logcat", false),
                 !canNotify,
                 LocalNetworkAccess.isMissing(this),
@@ -1147,11 +1216,6 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
         else
             modeLabel = getString(R.string.blocking_mode_standard);
 
-        PackageManager pm = getPackageManager();
-        String copyright = getString(R.string.app_copyright).replaceFirst(
-                "(?<=2019[–-])20\\d{2}",
-                new SimpleDateFormat("yyyy", Locale.US).format(new Date()));
-
         TroubleshootingState troubleshooting = new TroubleshootingState(
                 Util.batteryOptimizing(this),
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && Util.dataSaving(this),
@@ -1174,13 +1238,13 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
                 banners,
                 filter,
                 appItems,
-                getIntentInvite(this).resolveActivity(pm) != null,
-                getIntentSupport(this).resolveActivity(pm) != null,
-                getIntentApps(this).resolveActivity(pm) != null,
-                getIntentRate(this).resolveActivity(pm) != null,
+                cachedShowInvite,
+                cachedShowSupport,
+                cachedEnableMoreApps,
+                cachedShowRate,
                 Util.getSelfVersionName(this),
                 Util.getSelfVersionCode(this),
-                copyright,
+                cachedCopyright,
                 activeDialog,
                 troubleshooting));
     }

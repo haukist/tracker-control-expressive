@@ -20,7 +20,9 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
+import android.util.LruCache
 import android.view.View
+import android.widget.FrameLayout
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -75,6 +77,7 @@ import androidx.compose.material3.WideNavigationRail
 import androidx.compose.material3.WideNavigationRailItem
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -83,6 +86,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import kotlin.math.roundToInt
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ColorFilter
@@ -198,7 +204,8 @@ interface MainScreenCallbacks {
     fun onOpenSettings()
     fun onRequestNotificationsPermission()
     fun onRequestLocalNetworkPermission()
-    fun onOpenPrivateDnsHelp()
+    fun onOpenPrivateDnsBlockedHelp()
+    fun onOpenPrivateDnsBypassHelp()
     fun onSetFilterPref(key: String, value: Boolean)
     fun onSetSortPref(sort: String)
     fun onOpenLog()
@@ -236,17 +243,15 @@ object MainScreen {
         composeView = composeView,
         callbacks = callbacks,
         timelineContent = { visible ->
-            AndroidView(
-                factory = { timelineContainer },
-                update = { view -> view.visibility = if (visible) View.VISIBLE else View.GONE },
-                modifier = Modifier.fillMaxSize(),
+            FragmentContainerPlaceholder(
+                container = timelineContainer,
+                visible = visible,
             )
         },
         vpnContent = { visible ->
-            AndroidView(
-                factory = { vpnContainer },
-                update = { view -> view.visibility = if (visible) View.VISIBLE else View.GONE },
-                modifier = Modifier.fillMaxSize(),
+            FragmentContainerPlaceholder(
+                container = vpnContainer,
+                visible = visible,
             )
         },
     )
@@ -273,6 +278,41 @@ object MainScreen {
             }
         }
         return controller
+    }
+}
+
+@Composable
+private fun FragmentContainerPlaceholder(
+    container: View,
+    visible: Boolean,
+) {
+    SideEffect {
+        val targetVisibility = if (visible) View.VISIBLE else View.GONE
+        if (container.visibility != targetVisibility) {
+            container.visibility = targetVisibility
+        }
+    }
+    if (visible) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .onGloballyPositioned { coords ->
+                    val pos = coords.positionInRoot()
+                    val left = pos.x.roundToInt()
+                    val top = pos.y.roundToInt()
+                    val width = coords.size.width
+                    val height = coords.size.height
+                    val lp = container.layoutParams as? FrameLayout.LayoutParams
+                        ?: FrameLayout.LayoutParams(width, height)
+                    if (lp.leftMargin != left || lp.topMargin != top || lp.width != width || lp.height != height) {
+                        lp.leftMargin = left
+                        lp.topMargin = top
+                        lp.width = width
+                        lp.height = height
+                        container.layoutParams = lp
+                    }
+                },
+        )
     }
 }
 
@@ -374,7 +414,13 @@ fun MainScreenContent(
                             }
                         },
                         actions = {
-                            val switchCd = stringResource(R.string.app_name)
+                            val switchCd = stringResource(
+                                if (model.isProtectionEnabled) {
+                                    R.string.accessibility_tracker_blocking_enabled
+                                } else {
+                                    R.string.accessibility_tracker_blocking_disabled
+                                },
+                            )
                             Switch(
                                 checked = model.isProtectionEnabled,
                                 onCheckedChange = callbacks::onToggleProtection,
@@ -437,7 +483,9 @@ fun MainScreenContent(
                                 IconButton(onClick = { showOverflowMenu = true }) {
                                     Icon(
                                         painter = painterResource(android.R.drawable.ic_menu_more),
-                                        contentDescription = stringResource(R.string.menu_settings),
+                                        contentDescription = stringResource(
+                                            androidx.appcompat.R.string.abc_action_menu_overflow_description
+                                        ),
                                     )
                                 }
                                 MainOverflowMenu(
@@ -560,8 +608,7 @@ private fun UnifiedWarningBanners(
     banners: MainBannerState,
     callbacks: MainScreenCallbacks,
 ) {
-    val hasAny = banners.showDisabled ||
-        banners.showResearchMode ||
+    val hasAny = banners.showResearchMode ||
         banners.showNotifications ||
         banners.showLocalNetwork ||
         banners.showPrivateDnsBlocked ||
@@ -575,14 +622,6 @@ private fun UnifiedWarningBanners(
             .padding(horizontal = 16.dp, vertical = 6.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        if (banners.showDisabled) {
-            ExpressiveWarningBanner(
-                text = stringResource(R.string.msg_disabled),
-                icon = painterResource(R.drawable.ic_warning_amber),
-                isError = true,
-                modifier = Modifier.testTag("disabled_warning_banner"),
-            )
-        }
         if (banners.showResearchMode) {
             ExpressiveWarningBanner(
                 text = stringResource(R.string.msg_research_mode_notice),
@@ -613,7 +652,7 @@ private fun UnifiedWarningBanners(
                 text = stringResource(R.string.msg_private_dns_row),
                 icon = painterResource(R.drawable.ic_warning_amber),
                 isError = true,
-                onClick = callbacks::onOpenPrivateDnsHelp,
+                onClick = callbacks::onOpenPrivateDnsBlockedHelp,
             )
         }
         if (!banners.privateDnsBypassMessage.isNullOrBlank()) {
@@ -621,7 +660,7 @@ private fun UnifiedWarningBanners(
                 text = banners.privateDnsBypassMessage,
                 icon = painterResource(R.drawable.ic_warning_amber),
                 isError = true,
-                onClick = callbacks::onOpenPrivateDnsHelp,
+                onClick = callbacks::onOpenPrivateDnsBypassHelp,
             )
         }
     }
@@ -914,6 +953,8 @@ private val greyscaleColorFilter = ColorFilter.colorMatrix(
     ColorMatrix().apply { setToSaturation(0f) }
 )
 
+private val appIconCache = LruCache<String, ImageBitmap>(128)
+
 @Composable
 private fun AppIconImage(
     packageName: String,
@@ -922,11 +963,17 @@ private fun AppIconImage(
     onClick: () -> Unit,
 ) {
     val context = LocalContext.current
-    val bitmap by produceState<ImageBitmap?>(initialValue = null, key1 = packageName) {
+    val bitmap by produceState<ImageBitmap?>(
+        initialValue = appIconCache.get(packageName),
+        key1 = packageName,
+    ) {
+        if (value != null) return@produceState
         value = withContext(Dispatchers.IO) {
-            runCatching {
+            appIconCache.get(packageName) ?: runCatching {
                 val drawable = context.packageManager.getApplicationIcon(packageName)
-                drawableToBitmap(drawable, 96).asImageBitmap()
+                drawableToBitmap(drawable, 96).asImageBitmap().also {
+                    appIconCache.put(packageName, it)
+                }
             }.getOrNull()
         }
     }
@@ -959,13 +1006,15 @@ private fun AppIconImage(
 
 private fun drawableToBitmap(drawable: Drawable, sizePx: Int): Bitmap {
     if (drawable is BitmapDrawable && drawable.bitmap != null) {
-        return drawable.bitmap
+        val src = drawable.bitmap
+        if (src.width <= sizePx && src.height <= sizePx) {
+            return src
+        }
+        return Bitmap.createScaledBitmap(src, sizePx, sizePx, true)
     }
-    val width = drawable.intrinsicWidth.takeIf { it > 0 } ?: sizePx
-    val height = drawable.intrinsicHeight.takeIf { it > 0 } ?: sizePx
-    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    val bitmap = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bitmap)
-    drawable.setBounds(0, 0, canvas.width, canvas.height)
+    drawable.setBounds(0, 0, sizePx, sizePx)
     drawable.draw(canvas)
     return bitmap
 }
@@ -1035,7 +1084,6 @@ private fun SortDropdownMenu(
         "trackers_week" to R.string.menu_sort_companies_week,
         "trackers_all" to R.string.menu_sort_companies,
         "trackers_recent" to R.string.menu_sort_by_latest_detected_tracker,
-        "uid" to R.string.menu_sort_uid,
     )
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
         options.forEach { (key, labelRes) ->
@@ -1066,45 +1114,6 @@ private fun MainOverflowMenu(
             },
         )
         DropdownMenuItem(
-            text = { Text(stringResource(R.string.menu_settings)) },
-            onClick = {
-                onDismiss()
-                callbacks.onOpenSettings()
-            },
-        )
-        if (model.showInviteMenu) {
-            DropdownMenuItem(
-                text = { Text(stringResource(R.string.menu_invite)) },
-                onClick = {
-                    onDismiss()
-                    callbacks.onInvite()
-                },
-            )
-        }
-        DropdownMenuItem(
-            text = { Text(stringResource(R.string.menu_legend)) },
-            onClick = {
-                onDismiss()
-                callbacks.onOpenDialog(MainDialog.LEGEND)
-            },
-        )
-        if (model.showSupportMenu) {
-            DropdownMenuItem(
-                text = { Text(stringResource(R.string.menu_support)) },
-                onClick = {
-                    onDismiss()
-                    callbacks.onOpenSupport()
-                },
-            )
-        }
-        DropdownMenuItem(
-            text = { Text(stringResource(R.string.menu_csv)) },
-            onClick = {
-                onDismiss()
-                callbacks.onExportCsv()
-            },
-        )
-        DropdownMenuItem(
             text = { Text(stringResource(R.string.menu_troubleshooting)) },
             onClick = {
                 onDismiss()
@@ -1112,18 +1121,10 @@ private fun MainOverflowMenu(
             },
         )
         DropdownMenuItem(
-            text = { Text(stringResource(R.string.menu_about)) },
+            text = { Text(stringResource(R.string.menu_settings)) },
             onClick = {
                 onDismiss()
-                callbacks.onOpenDialog(MainDialog.ABOUT)
-            },
-        )
-        DropdownMenuItem(
-            text = { Text(stringResource(R.string.menu_apps)) },
-            enabled = model.enableMoreAppsMenu,
-            onClick = {
-                onDismiss()
-                callbacks.onOpenMoreApps()
+                callbacks.onOpenSettings()
             },
         )
     }

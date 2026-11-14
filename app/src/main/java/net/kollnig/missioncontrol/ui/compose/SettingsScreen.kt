@@ -28,8 +28,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -55,6 +57,8 @@ import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -107,7 +111,17 @@ sealed interface SettingsItem {
         val value: String,
         val isPassword: Boolean = false,
         override val enabled: Boolean = true,
-    ) : SettingsItem
+        val isNumber: Boolean = false,
+    ) : SettingsItem {
+        constructor(
+            key: String,
+            title: String,
+            summary: String?,
+            value: String,
+            isPassword: Boolean,
+            enabled: Boolean,
+        ) : this(key, title, summary, value, isPassword, enabled, false)
+    }
 
     data class ActionItem(
         override val key: String,
@@ -195,10 +209,10 @@ fun SettingsScreenContent(
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            items(
+            itemsIndexed(
                 items = model.sections,
-                key = { section -> section.title ?: section.items.firstOrNull()?.key ?: "section" },
-            ) { section ->
+                key = { index, section -> "${model.page.name}_${index}_${section.title ?: ""}" },
+            ) { _, section ->
                 if (section.items.isNotEmpty()) {
                     Column(modifier = Modifier.fillMaxWidth()) {
                         if (!section.title.isNullOrBlank()) {
@@ -272,13 +286,23 @@ private fun SettingsItemRow(
     onClick: () -> Unit,
     onCheckedChange: (Boolean) -> Unit,
 ) {
+    val interactionModifier = if (item is SettingsItem.SwitchItem) {
+        Modifier.toggleable(
+            value = item.checked,
+            enabled = item.enabled,
+            role = Role.Switch,
+            onValueChange = onCheckedChange,
+        )
+    } else {
+        Modifier.clickable(enabled = item.enabled, onClick = onClick)
+    }
     ExpressiveGroupedSurface(
         index = index,
         count = count,
         modifier = Modifier
             .testTag("pref_${item.key}")
             .alpha(if (item.enabled) 1f else 0.5f)
-            .clickable(enabled = item.enabled, onClick = onClick),
+            .then(interactionModifier),
     ) {
         Row(
             modifier = Modifier
@@ -310,7 +334,7 @@ private fun SettingsItemRow(
                     Spacer(modifier = Modifier.width(12.dp))
                     Switch(
                         checked = item.checked,
-                        onCheckedChange = onCheckedChange,
+                        onCheckedChange = null,
                         enabled = item.enabled,
                     )
                 }
@@ -385,6 +409,9 @@ private fun SettingsTextInputDialog(
                 value = text,
                 onValueChange = { text = it },
                 singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = if (item.isNumber) KeyboardType.Number else KeyboardType.Text,
+                ),
                 visualTransformation = if (item.isPassword) {
                     PasswordVisualTransformation()
                 } else {

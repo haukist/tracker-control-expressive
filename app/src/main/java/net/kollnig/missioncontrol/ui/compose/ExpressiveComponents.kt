@@ -176,7 +176,7 @@ fun ExpressiveTopAppBar(
                 IconButton(onClick = onNavigateUp) {
                     Icon(
                         painter = painterResource(R.drawable.ic_arrow_back),
-                        contentDescription = stringResource(android.R.string.cancel)
+                        contentDescription = stringResource(androidx.appcompat.R.string.abc_action_bar_up_description)
                     )
                 }
             }
@@ -226,7 +226,7 @@ fun ExpressiveMediumTopAppBar(
                 IconButton(onClick = onNavigateUp) {
                     Icon(
                         painter = painterResource(R.drawable.ic_arrow_back),
-                        contentDescription = stringResource(android.R.string.cancel)
+                        contentDescription = stringResource(androidx.appcompat.R.string.abc_action_bar_up_description)
                     )
                 }
             }

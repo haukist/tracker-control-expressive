@@ -138,7 +138,20 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
 
     private final Handler wgStatusHandler = new Handler(Looper.getMainLooper());
     private final Runnable tailscaleStatusListener = () -> wgStatusHandler.post(() -> {
-        if (running) renderSettings();
+        if (!running) return;
+        if (awaitingTailscaleLogin) {
+            SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+            TailscaleSnapshot state = TailscaleManager.snapshot();
+            if (!prefs.getBoolean("ts_enabled", false)
+                    || !prefs.getBoolean("enabled", false)
+                    || !state.error.isEmpty()
+                    || "Running".equals(state.state)) {
+                awaitingTailscaleLogin = false;
+            } else {
+                openTailscaleLogin();
+            }
+        }
+        renderSettings();
     });
     private final Runnable wgStatusListener = () -> wgStatusHandler.post(() -> {
         if (running) renderSettings();
@@ -151,10 +164,23 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
 
     private boolean requestedLocalNetwork = false;
 
+    private static final String KEY_CURRENT_PAGE = "settings_current_page";
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         setTheme(R.style.AppThemeRed_NoActionBar);
         super.onCreate(savedInstanceState);
+
+        if (savedInstanceState != null) {
+            String savedPage = savedInstanceState.getString(KEY_CURRENT_PAGE);
+            if (savedPage != null) {
+                try {
+                    currentPage = SettingsPage.valueOf(savedPage);
+                } catch (IllegalArgumentException ignored) {
+                    currentPage = SettingsPage.ROOT;
+                }
+            }
+        }
 
         ComposeView composeView = new ComposeView(this);
         setContentView(composeView);
@@ -220,6 +246,12 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
         });
 
         renderSettings();
+    }
+
+    @Override
+    protected void onSaveInstanceState(@NonNull Bundle outState) {
+        super.onSaveInstanceState(outState);
+        outState.putString(KEY_CURRENT_PAGE, currentPage.name());
     }
 
     @Override
@@ -295,20 +327,38 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
     }
 
     private void handleTextInput(String key, String value, SharedPreferences prefs) {
+        String trimmed = value == null ? "" : value.trim();
         if ("doh_endpoint".equals(key)) {
-            String endpoint = value.trim();
-            if (!isValidDohEndpoint(endpoint)) {
+            if (!isValidDohEndpoint(trimmed)) {
                 Toast.makeText(this, R.string.msg_invalid_doh_endpoint, Toast.LENGTH_LONG).show();
                 return;
             }
-            prefs.edit().putString(key, endpoint).apply();
+            prefs.edit().putString(key, trimmed).apply();
             renderSettings();
             return;
         }
-        if (TextUtils.isEmpty(value))
+        if ("pause".equals(key) || "ttl".equals(key) || "pcap_record_size".equals(key)
+                || "pcap_file_size".equals(key) || "socks5_port".equals(key)) {
+            if (!TextUtils.isEmpty(trimmed)) {
+                try {
+                    int parsed = Integer.parseInt(trimmed);
+                    boolean valid = "socks5_port".equals(key)
+                            ? (parsed >= 1 && parsed <= 65535)
+                            : (parsed >= 0);
+                    if (!valid) {
+                        Toast.makeText(this, android.R.string.VideoView_error_title, Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                } catch (NumberFormatException ex) {
+                    Toast.makeText(this, android.R.string.VideoView_error_title, Toast.LENGTH_SHORT).show();
+                    return;
+                }
+            }
+        }
+        if (TextUtils.isEmpty(trimmed))
             prefs.edit().remove(key).apply();
         else
-            prefs.edit().putString(key, value).apply();
+            prefs.edit().putString(key, trimmed).apply();
         renderSettings();
     }
 
@@ -680,7 +730,11 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
                     true));
         }
 
-        boolean reloadChecked = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O || prefs.getBoolean("reload_onconnectivity", true);
+        boolean reloadChecked = prefs.getBoolean("reload_onconnectivity", false);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !reloadChecked) {
+            reloadChecked = true;
+            prefs.edit().putBoolean("reload_onconnectivity", true).apply();
+        }
         items.add(new SettingsItem.SwitchItem(
                 "reload_onconnectivity",
                 getString(R.string.setting_reload_onconnectivity),
@@ -692,14 +746,15 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
                 "tcp_mss_clamp",
                 getString(R.string.setting_tcp_mss_clamp),
                 getString(R.string.summary_tcp_mss_clamp),
-                prefs.getBoolean("tcp_mss_clamp", true),
+                prefs.getBoolean("tcp_mss_clamp", false),
                 true));
 
+        boolean dohEnabled = prefs.getBoolean("doh_enabled", false);
         items.add(new SettingsItem.SwitchItem(
                 "doh_enabled",
                 getString(R.string.setting_doh_enabled),
                 getString(R.string.summary_doh_enabled),
-                prefs.getBoolean("doh_enabled", false),
+                dohEnabled,
                 true));
 
         items.add(new SettingsItem.TextInputItem(
@@ -708,14 +763,14 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
                 prefs.getString("doh_endpoint", BuildConfig.DEFAULT_DOH_ENDPOINT),
                 prefs.getString("doh_endpoint", BuildConfig.DEFAULT_DOH_ENDPOINT),
                 false,
-                true));
+                dohEnabled));
 
         items.add(new SettingsItem.SwitchItem(
                 "doh_dns_fallback",
                 getString(R.string.setting_doh_dns_fallback),
                 getString(R.string.summary_doh_dns_fallback),
                 prefs.getBoolean("doh_dns_fallback", false),
-                true));
+                dohEnabled));
 
         items.add(new SettingsItem.SwitchItem(
                 "block_dot",
@@ -768,7 +823,7 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
                     "hosts_auto_update",
                     getString(R.string.setting_hosts_auto_update),
                     getString(R.string.summary_hosts_auto_update),
-                    prefs.getBoolean("hosts_auto_update", true),
+                    prefs.getBoolean("hosts_auto_update", false),
                     true));
         }
 
@@ -777,7 +832,7 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
                     "log_app",
                     getString(R.string.setting_log_app),
                     getString(R.string.summary_log_app),
-                    prefs.getBoolean("log_app", false),
+                    prefs.getBoolean("log_app", true),
                     true));
             items.add(new SettingsItem.ActionItem(
                     "forwarding",
@@ -836,6 +891,7 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
                 null,
                 prefs.getString("ttl", "259200"),
                 false,
+                true,
                 true));
         items.add(new SettingsItem.SwitchItem(
                 "socks5_enabled",
@@ -856,6 +912,7 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
                 null,
                 prefs.getString("socks5_port", ""),
                 false,
+                true,
                 true));
         items.add(new SettingsItem.TextInputItem(
                 "socks5_username",
@@ -878,6 +935,7 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
                 null,
                 prefs.getString("pcap_record_size", "64"),
                 false,
+                true,
                 true));
         items.add(new SettingsItem.TextInputItem(
                 "pcap_file_size",
@@ -885,6 +943,7 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
                 null,
                 prefs.getString("pcap_file_size", "2"),
                 false,
+                true,
                 true));
         items.add(new SettingsItem.ActionItem(
                 "show_resolved",
@@ -958,11 +1017,6 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
         List<SettingsItem> items = new ArrayList<>();
         TailscaleSnapshot state = TailscaleManager.snapshot();
         boolean enabled = prefs.getBoolean("ts_enabled", false);
-        if (!enabled || !prefs.getBoolean("enabled", false) || !state.error.isEmpty()
-                || "Running".equals(state.state))
-            awaitingTailscaleLogin = false;
-        if (awaitingTailscaleLogin)
-            openTailscaleLogin();
 
         items.add(new SettingsItem.ActionItem(
                 "ts_status",
@@ -1001,7 +1055,7 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
                 "loglevel",
                 "Native log level",
                 "Log level verbose, debug and info will impact performance and battery usage",
-                prefs.getString("loglevel", Integer.toString(Log.WARN)),
+                prefs.getString("loglevel", "6"),
                 logEntries,
                 true));
         items.add(new SettingsItem.SwitchItem(

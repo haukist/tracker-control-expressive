@@ -78,7 +78,8 @@ class ActivityMainResearchNoticeTest {
         override fun onOpenSettings() {}
         override fun onRequestNotificationsPermission() {}
         override fun onRequestLocalNetworkPermission() {}
-        override fun onOpenPrivateDnsHelp() {}
+        override fun onOpenPrivateDnsBlockedHelp() {}
+        override fun onOpenPrivateDnsBypassHelp() {}
         override fun onSetFilterPref(key: String, value: Boolean) {}
         override fun onSetSortPref(sort: String) {}
         override fun onOpenLog() {}

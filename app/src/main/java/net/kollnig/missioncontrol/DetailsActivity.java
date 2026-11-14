@@ -147,7 +147,7 @@ public class DetailsActivity extends AppCompatActivity {
                 appName,
                 appUid);
         viewPager = new ViewPager2(this);
-        viewPager.setId(View.generateViewId());
+        viewPager.setId(R.id.details_pager);
         viewPager.setAdapter(detailsStateAdapter);
 
         List<String> tabTitles = new ArrayList<>();
@@ -157,6 +157,7 @@ public class DetailsActivity extends AppCompatActivity {
 
         androidx.compose.ui.platform.ComposeView composeView =
                 new androidx.compose.ui.platform.ComposeView(this);
+        composeView.setId(R.id.compose_details);
         setContentView(composeView);
 
         net.kollnig.missioncontrol.ui.compose.DetailsScreen.installWithPager(

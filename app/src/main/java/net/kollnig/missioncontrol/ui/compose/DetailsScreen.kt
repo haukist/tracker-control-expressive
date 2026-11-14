@@ -28,7 +28,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
@@ -129,7 +129,9 @@ fun DetailsScreenContent(
                         IconButton(onClick = { showMenu = true }) {
                             Icon(
                                 painter = painterResource(android.R.drawable.ic_menu_more),
-                                contentDescription = null,
+                                contentDescription = stringResource(
+                                    androidx.appcompat.R.string.abc_action_menu_overflow_description
+                                ),
                             )
                         }
                         DropdownMenu(
@@ -177,7 +179,7 @@ fun DetailsScreenContent(
                 .padding(innerPadding),
         ) {
             if (tabTitles.isNotEmpty()) {
-                PrimaryTabRow(
+                PrimaryScrollableTabRow(
                     selectedTabIndex = selectedTab.coerceIn(0, tabTitles.lastIndex),
                 ) {
                     tabTitles.forEachIndexed { index, title ->

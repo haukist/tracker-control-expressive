@@ -11,6 +11,8 @@
     <item name="compose_blocklists" type="id" />
     <item name="compose_wg_profiles" type="id" />
     <item name="compose_main" type="id" />
+    <item name="compose_details" type="id" />
+    <item name="details_pager" type="id" />
     <item name="timelineContainer" type="id" />
     <item name="vpnContainer" type="id" />
 </resources>

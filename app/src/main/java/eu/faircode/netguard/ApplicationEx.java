@@ -172,7 +172,7 @@ public class ApplicationEx extends Application {
                     a.recycle();
 
                     int statusBarColor = ContextCompat.getColor(activity, R.color.colorPrimaryDark);
-                    if (hasThemeActionBar) {
+                    if (hasThemeActionBar || activity instanceof ActivityLog) {
                         EdgeToEdge.enable(
                                 (ComponentActivity) activity,
                                 SystemBarStyle.dark(statusBarColor),
