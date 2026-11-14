@@ -120,18 +120,14 @@ internal fun BlocklistsScreenContent(
     model: BlocklistsScreenModel,
     callbacks: BlocklistsScreenCallbacks
 ) {
-    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     Scaffold(
-        modifier = Modifier
-            .fillMaxSize()
-            .nestedScroll(scrollBehavior.nestedScrollConnection),
+        modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
-            ExpressiveMediumTopAppBar(
+            ExpressiveTopAppBar(
                 title = stringResource(R.string.title_blocklists),
-                onNavigateUp = callbacks::onNavigateUp,
-                scrollBehavior = scrollBehavior
+                onNavigateUp = callbacks::onNavigateUp
             )
         },
         floatingActionButton = {
@@ -184,7 +180,11 @@ internal fun BlocklistsScreenContent(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    ExpressiveLoadingIndicator()
+                    Icon(
+                        painter = painterResource(android.R.drawable.stat_sys_download),
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
                     Text(
                         stringResource(R.string.blocklist_downloading),
                         style = MaterialTheme.typography.bodyMedium,
