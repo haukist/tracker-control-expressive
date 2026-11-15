@@ -441,7 +441,7 @@ private fun TimelineInsightsCard(
                             modifier = Modifier.semantics { contentDescription = shareLabel }
                         ) {
                             Icon(
-                                painter = painterResource(R.drawable.ic_ios_share),
+                                painter = painterResource(R.drawable.ic_share),
                                 contentDescription = null,
                                 modifier = Modifier.size(24.dp),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
@@ -691,60 +691,74 @@ private fun TimelineAppRow(
             if (row.clickable) role = Role.Button
         }
 
-    Column(
-        modifier = rowModifier
-            .testTag("timeline-app-${row.uid}")
-            .padding(horizontal = 16.dp, vertical = 12.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
+    // Keep the divider outside the clickable row and its vertical padding so
+    // ripple/a11y bounds cover only the row and spacing stays 12.dp on both sides.
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = rowModifier
+                .testTag("timeline-app-${row.uid}")
+                .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
-            TimelineAppIcon(row.packageName)
+            TimelineAppHeader(row)
             Text(
-                text = row.appName,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(start = 12.dp),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = row.relativeTime,
-                modifier = Modifier.padding(start = 8.dp),
-                style = MaterialTheme.typography.labelMedium,
+                text = row.summary,
+                modifier = Modifier.padding(start = 48.dp, top = 2.dp),
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-        }
-        Text(
-            text = row.summary,
-            modifier = Modifier.padding(start = 48.dp, top = 2.dp),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Column(
-            modifier = Modifier.padding(start = 48.dp, top = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(1.dp)
-        ) {
-            row.contacts.forEach { contact ->
-                TimelineTrackerRow(contact)
-            }
-            if (row.overflowCount > 0) {
-                Text(
-                    text = stringResource(R.string.timeline_more_trackers, row.overflowCount),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+            TimelineTrackerList(row)
         }
         if (showDivider) {
             HorizontalDivider(
                 modifier = Modifier
-                    .padding(top = 12.dp)
+                    .padding(horizontal = 16.dp)
                     .testTag("timeline-divider"),
                 color = MaterialTheme.colorScheme.outlineVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun TimelineAppHeader(row: TimelineRow.App) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        TimelineAppIcon(row.packageName)
+        Text(
+            text = row.appName,
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 12.dp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        Text(
+            text = row.relativeTime,
+            modifier = Modifier.padding(start = 8.dp),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun TimelineTrackerList(row: TimelineRow.App) {
+    Column(
+        modifier = Modifier.padding(start = 48.dp, top = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(1.dp)
+    ) {
+        row.contacts.forEach { contact ->
+            TimelineTrackerRow(contact)
+        }
+        if (row.overflowCount > 0) {
+            Text(
+                text = stringResource(R.string.timeline_more_trackers, row.overflowCount),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }

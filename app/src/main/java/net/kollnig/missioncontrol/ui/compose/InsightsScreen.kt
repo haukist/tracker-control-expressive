@@ -352,7 +352,7 @@ private fun InsightsOverviewCard(
                     modifier = Modifier.testTag("insights-share")
                 ) {
                     Icon(
-                        painter = painterResource(R.drawable.ic_ios_share),
+                        painter = painterResource(R.drawable.ic_share),
                         contentDescription = stringResource(R.string.insights_share),
                         modifier = Modifier.size(24.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
