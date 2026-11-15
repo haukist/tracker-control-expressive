@@ -423,8 +423,8 @@ private fun CategoryRow(
                 contentDescription = category.switchDescription
             },
             colors = SwitchDefaults.colors(
-                checkedThumbColor = MaterialTheme.colorScheme.onSecondary,
-                checkedTrackColor = MaterialTheme.colorScheme.secondary,
+                checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+                checkedTrackColor = MaterialTheme.colorScheme.primary,
                 uncheckedThumbColor = MaterialTheme.colorScheme.outline,
                 uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant,
                 uncheckedBorderColor = MaterialTheme.colorScheme.outline
@@ -487,7 +487,7 @@ private fun CompanyRow(
                 color = if (company.statusBlocked) {
                     MaterialTheme.colorScheme.primary
                 } else {
-                    MaterialTheme.colorScheme.secondary
+                    MaterialTheme.colorScheme.tertiary
                 }
             )
         }

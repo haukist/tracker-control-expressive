@@ -32,7 +32,7 @@
     <string name="menu_troubleshooting">トラブルシューティング</string>
     <string name="menu_about">TrackerControl について</string>
     <string name="timeline_empty_disabled_title">TrackerControl はオフです</string>
-    <string name="timeline_empty_disabled_subtitle">右上のスイッチで TrackerControl を有効にしてください。すると、アプリのトラッカーアクティビティがここに表示されます。</string>
+    <string name="timeline_empty_disabled_subtitle">上部バーのスイッチで TrackerControl を有効にしてください。すると、アプリのトラッカーアクティビティがここに表示されます。</string>
     <string name="timeline_empty_enabled_title">トラッカーを監視中…</string>
     <string name="timeline_empty_enabled_subtitle">多くのアプリは使用中にのみトラッカーへ接続します。アプリを開いてから戻ると、そのトラッカーアクティビティがここに表示されます。</string>
     <string name="timeline_empty_recording_off_title">トラッカーの記録はオフです</string>

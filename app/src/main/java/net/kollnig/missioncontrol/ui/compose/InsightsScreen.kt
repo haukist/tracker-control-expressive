@@ -277,7 +277,7 @@ private fun PopulatedContent(
             InsightsListCard(
                 items = data.topDomains,
                 showAsAppCount = true,
-                progressColor = MaterialTheme.colorScheme.secondary,
+                progressColor = MaterialTheme.colorScheme.tertiary,
                 progressTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
                 modifier = Modifier.padding(horizontal = 16.dp)
             )

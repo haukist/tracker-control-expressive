@@ -67,6 +67,7 @@ import androidx.compose.material3.ShortNavigationBar
 import androidx.compose.material3.ShortNavigationBarItem
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -358,23 +359,30 @@ fun MainScreenContent(
                                     )
                                 }
                             } else {
+                                val switchCd = stringResource(R.string.switch_tracker_control_description)
                                 val iconRes = if (model.isQueueActive) {
                                     R.drawable.ic_history
                                 } else {
                                     R.drawable.ic_rocket2
                                 }
-                                Icon(
-                                    painter = painterResource(iconRes),
-                                    contentDescription = null,
-                                    tint = if (model.isProtectionEnabled) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    },
+                                Switch(
+                                    checked = model.isProtectionEnabled,
+                                    onCheckedChange = callbacks::onToggleProtection,
                                     modifier = Modifier
-                                        .padding(start = 12.dp, end = 4.dp)
-                                        .size(26.dp)
-                                        .alpha(if (model.isNetworkActive) 1f else 0.5f),
+                                        .padding(start = 12.dp, end = 8.dp)
+                                        .alpha(if (model.isNetworkActive) 1f else 0.6f)
+                                        .testTag("protection_switch")
+                                        .semantics { contentDescription = switchCd },
+                                    thumbContent = {
+                                        Icon(
+                                            painter = painterResource(iconRes),
+                                            contentDescription = null,
+                                            modifier = Modifier.size(SwitchDefaults.IconSize),
+                                        )
+                                    },
+                                    colors = SwitchDefaults.colors(
+                                        checkedIconColor = MaterialTheme.colorScheme.primary,
+                                    ),
                                 )
                             }
                         },
@@ -391,7 +399,7 @@ fun MainScreenContent(
                             } else {
                                 Column {
                                     Text(
-                                        text = stringResource(R.string.app_name),
+                                        text = stringResource(R.string.your_privacy),
                                         style = MaterialTheme.typography.titleLarge,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
@@ -408,21 +416,6 @@ fun MainScreenContent(
                         },
                         actions = {
                             if (!isSearchMode) {
-                                val switchCd = stringResource(
-                                    if (model.isProtectionEnabled) {
-                                        R.string.accessibility_tracker_blocking_enabled
-                                    } else {
-                                        R.string.accessibility_tracker_blocking_disabled
-                                    },
-                                )
-                                Switch(
-                                    checked = model.isProtectionEnabled,
-                                    onCheckedChange = callbacks::onToggleProtection,
-                                    modifier = Modifier
-                                        .testTag("protection_switch")
-                                        .semantics { contentDescription = switchCd },
-                                )
-
                                 IconButton(
                                     onClick = {
                                         if (model.selectedTab != MainTabs.APPS) {

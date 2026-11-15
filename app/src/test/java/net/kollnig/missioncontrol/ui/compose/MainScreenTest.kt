@@ -1,7 +1,12 @@
 package net.kollnig.missioncontrol.ui.compose
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -63,6 +68,7 @@ class MainScreenTest {
             }
         }
 
+        composeRule.onNodeWithText(context.getString(R.string.your_privacy)).assertIsDisplayed()
         composeRule.onNodeWithTag("protection_switch").assertIsDisplayed()
         composeRule.onNodeWithTag("overflow_button").performClick()
         composeRule.onNodeWithText(context.getString(R.string.menu_log)).assertIsDisplayed()
@@ -102,6 +108,41 @@ class MainScreenTest {
 
         composeRule.onNodeWithText("Test App").assertIsDisplayed()
         composeRule.onNodeWithText("3 tracking companies").assertIsDisplayed()
+    }
+
+    @Test
+    fun protectionSwitchTogglesAndReappearsAfterExitingSearch() {
+        var toggledTo: Boolean? = null
+        var isSearchOpen by mutableStateOf(false)
+        composeRule.setContent {
+            TrackerControlTheme(useDynamicColor = false) {
+                MainScreenContent(
+                    model = MainScreenModel(
+                        selectedTab = MainTabs.APPS,
+                        isProtectionEnabled = false,
+                        isSearchOpen = isSearchOpen,
+                    ),
+                    callbacks = object : NoOpMainScreenCallbacks() {
+                        override fun onToggleProtection(enabled: Boolean) {
+                            toggledTo = enabled
+                        }
+
+                        override fun onSearchOpenChanged(open: Boolean) {
+                            isSearchOpen = open
+                        }
+                    },
+                )
+            }
+        }
+
+        composeRule.onNodeWithTag("protection_switch").assertIsDisplayed().assertIsOff().performClick()
+        assertEquals(true, toggledTo)
+
+        composeRule.onNodeWithTag("search_button").performClick()
+        composeRule.onNodeWithTag("protection_switch").assertDoesNotExist()
+
+        composeRule.onNodeWithTag("search_back_button").performClick()
+        composeRule.onNodeWithTag("protection_switch").assertIsDisplayed()
     }
 }
 
