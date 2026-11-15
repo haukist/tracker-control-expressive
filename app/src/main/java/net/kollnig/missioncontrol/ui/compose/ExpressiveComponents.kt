@@ -18,6 +18,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
@@ -145,18 +146,22 @@ fun ExpressiveGroupedColumn(
 
 /**
  * Section label above an Expressive grouped card/list.
+ *
+ * @param contentPadding Padding around the label; callers whose container already provides
+ * horizontal padding (such as a padded `LazyColumn`) can override it to avoid double margins.
  */
 @Composable
 fun ExpressiveSectionLabel(
     text: String,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    contentPadding: PaddingValues = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
 ) {
     Text(
         text = text,
         style = MaterialTheme.typography.titleSmall,
         color = MaterialTheme.colorScheme.primary,
         modifier = modifier
-            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .padding(contentPadding)
             .semantics { heading() }
     )
 }
