@@ -244,12 +244,11 @@ fun SettingsScreenContent(
                 if (section.items.isNotEmpty()) {
                     Column(modifier = Modifier.fillMaxWidth()) {
                         if (!section.title.isNullOrBlank()) {
-                            // LazyColumn contentPadding already supplies the 16.dp horizontal margin,
-                            // so omit ExpressiveSectionLabel's default horizontal padding to keep the
-                            // title aligned with the grouped cards below it.
+                            // LazyColumn contentPadding already supplies the 16.dp horizontal margin;
+                            // add 8.dp horizontal padding so the label sits 8.dp inside the card edge (24.dp).
                             ExpressiveSectionLabel(
                                 text = section.title,
-                                contentPadding = PaddingValues(vertical = 8.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
                             )
                         }
                         ExpressiveGroupedColumn {

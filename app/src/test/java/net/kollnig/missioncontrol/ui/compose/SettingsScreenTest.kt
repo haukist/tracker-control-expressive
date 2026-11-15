@@ -47,8 +47,8 @@ class SettingsScreenTest {
         val labelBounds = composeRule.onNodeWithText("Blocking").getUnclippedBoundsInRoot()
         // pref_<key> is attached directly to ExpressiveGroupedSurface (the card itself).
         val cardBounds = composeRule.onNodeWithTag("pref_test_toggle").getUnclippedBoundsInRoot()
-        assertDpClose(cardBounds.left, labelBounds.left)
-        assertDpClose(16.dp, labelBounds.left)
+        assertDpClose(cardBounds.left + 8.dp, labelBounds.left)
+        assertDpClose(24.dp, labelBounds.left)
     }
 
     private fun assertDpClose(expected: Dp, actual: Dp, tolerance: Dp = 0.5.dp) {
