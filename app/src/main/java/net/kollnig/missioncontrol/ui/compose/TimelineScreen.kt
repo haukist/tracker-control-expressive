@@ -335,6 +335,8 @@ private fun TimelineList(
     }
 }
 
+private val InsightsCardPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 16.dp)
+
 @Composable
 private fun TimelineInsightsCard(
     state: TimelineInsightsState,
@@ -345,7 +347,7 @@ private fun TimelineInsightsCard(
         TimelineInsightsState.Loading -> Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .padding(InsightsCardPadding)
                 .semantics { contentDescription = insightsTitle },
             shape = RoundedCornerShape(24.dp),
             colors = CardDefaults.cardColors(
@@ -403,7 +405,7 @@ private fun TimelineInsightsCard(
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .padding(InsightsCardPadding)
                     .clickable(
                         role = Role.Button,
                         onClick = callbacks::onOpenInsights
