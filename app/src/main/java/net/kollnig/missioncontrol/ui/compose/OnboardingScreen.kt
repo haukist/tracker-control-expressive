@@ -16,8 +16,12 @@
  */
 package net.kollnig.missioncontrol.ui.compose
 
+import android.graphics.Typeface
+import android.text.Spanned
+import android.text.style.StrikethroughSpan
+import android.text.style.StyleSpan
+import android.text.style.UnderlineSpan
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -51,6 +55,7 @@ import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,15 +64,20 @@ import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import net.kollnig.missioncontrol.R
 
 data class OnboardingSlideUi(
     val titleResId: Int,
     val title: String,
-    val description: String,
+    val description: CharSequence,
     val iconResId: Int,
     val actionLabel: String? = null,
     val actionEnabled: Boolean = false,
@@ -142,8 +152,11 @@ fun OnboardingScreenContent(
     LaunchedEffect(controller.requestedPage) {
         val target = controller.requestedPage
         if (target in slides.indices) {
-            pagerState.animateScrollToPage(target)
-            controller.clearPageRequest()
+            try {
+                pagerState.animateScrollToPage(target)
+            } finally {
+                controller.clearPageRequest()
+            }
         }
     }
 
@@ -280,8 +293,11 @@ private fun StandardSlideContent(
 
         Spacer(modifier = Modifier.height(14.dp))
 
+        val annotatedDescription = remember(slide.description) {
+            slide.description.toAnnotatedString()
+        }
         Text(
-            text = slide.description,
+            text = annotatedDescription,
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
@@ -357,8 +373,11 @@ private fun BlockingModeSlideContent(
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
         )
+        val annotatedDescription = remember(slide.description) {
+            slide.description.toAnnotatedString()
+        }
         Text(
-            text = slide.description,
+            text = annotatedDescription,
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -369,6 +388,7 @@ private fun BlockingModeSlideContent(
                 ExpressiveGroupedSurface(
                     index = index,
                     count = options.size,
+                    onClick = { onSelectOption(option.key) },
                     color = if (selected) {
                         MaterialTheme.colorScheme.secondaryContainer
                     } else {
@@ -379,7 +399,6 @@ private fun BlockingModeSlideContent(
                     } else {
                         MaterialTheme.colorScheme.onSurface
                     },
-                    modifier = Modifier.clickable { onSelectOption(option.key) },
                 ) {
                     Row(
                         modifier = Modifier
@@ -389,7 +408,7 @@ private fun BlockingModeSlideContent(
                     ) {
                         RadioButton(
                             selected = selected,
-                            onClick = { onSelectOption(option.key) },
+                            onClick = null,
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Column(modifier = Modifier.weight(1f)) {
@@ -406,6 +425,38 @@ private fun BlockingModeSlideContent(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+private fun CharSequence.toAnnotatedString(): AnnotatedString {
+    if (this !is Spanned) {
+        return AnnotatedString(toString())
+    }
+    val text = toString()
+    return buildAnnotatedString {
+        append(text)
+        getSpans(0, text.length, Any::class.java).forEach { span ->
+            val start = getSpanStart(span)
+            val end = getSpanEnd(span)
+            if (start < 0 || end <= start) return@forEach
+            val style = when (span) {
+                is StyleSpan -> when (span.style) {
+                    Typeface.BOLD -> SpanStyle(fontWeight = FontWeight.Bold)
+                    Typeface.ITALIC -> SpanStyle(fontStyle = FontStyle.Italic)
+                    Typeface.BOLD_ITALIC -> SpanStyle(
+                        fontWeight = FontWeight.Bold,
+                        fontStyle = FontStyle.Italic,
+                    )
+                    else -> null
+                }
+                is UnderlineSpan -> SpanStyle(textDecoration = TextDecoration.Underline)
+                is StrikethroughSpan -> SpanStyle(textDecoration = TextDecoration.LineThrough)
+                else -> null
+            }
+            if (style != null) {
+                addStyle(style, start, end)
             }
         }
     }

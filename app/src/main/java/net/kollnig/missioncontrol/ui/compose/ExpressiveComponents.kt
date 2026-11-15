@@ -91,18 +91,41 @@ fun ExpressiveGroupedSurface(
     modifier: Modifier = Modifier,
     color: Color = MaterialTheme.colorScheme.surfaceContainerLow,
     contentColor: Color = MaterialTheme.colorScheme.onSurface,
+    onClick: (() -> Unit)? = null,
+    enabled: Boolean = true,
+    checked: Boolean? = null,
+    onCheckedChange: ((Boolean) -> Unit)? = null,
     content: @Composable () -> Unit
 ) {
     val shape = groupedItemShape(index, count)
-    Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(shape),
-        shape = shape,
-        color = color,
-        contentColor = contentColor,
-        content = content
-    )
+    when {
+        checked != null && onCheckedChange != null -> Surface(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            enabled = enabled,
+            modifier = modifier.fillMaxWidth(),
+            shape = shape,
+            color = color,
+            contentColor = contentColor,
+            content = content
+        )
+        onClick != null -> Surface(
+            onClick = onClick,
+            enabled = enabled,
+            modifier = modifier.fillMaxWidth(),
+            shape = shape,
+            color = color,
+            contentColor = contentColor,
+            content = content
+        )
+        else -> Surface(
+            modifier = modifier.fillMaxWidth(),
+            shape = shape,
+            color = color,
+            contentColor = contentColor,
+            content = content
+        )
+    }
 }
 
 /**

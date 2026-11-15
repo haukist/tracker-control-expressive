@@ -82,6 +82,8 @@ public class ActivityOnboarding extends AppCompatActivity {
         ComposeView composeView = new ComposeView(this);
         setContentView(composeView);
 
+        BlockingMode.enforcePlayStoreMode(this);
+
         screenController = OnboardingScreen.install(composeView, new OnboardingScreenCallbacks() {
             @Override
             public void onSlideAction(int titleResId) {
@@ -128,7 +130,7 @@ public class ActivityOnboarding extends AppCompatActivity {
         slides.add(new OnboardingSlideUi(
                 R.string.onboarding_welcome_title,
                 getString(R.string.onboarding_welcome_title),
-                getText(R.string.onboarding_welcome_desc).toString(),
+                getText(R.string.onboarding_welcome_desc),
                 R.drawable.ic_rocket2,
                 null,
                 false,
@@ -139,7 +141,7 @@ public class ActivityOnboarding extends AppCompatActivity {
             slides.add(new OnboardingSlideUi(
                     R.string.onboarding_whatsnew_title,
                     getString(R.string.onboarding_whatsnew_title),
-                    getText(R.string.onboarding_whatsnew_desc).toString(),
+                    getText(R.string.onboarding_whatsnew_desc),
                     R.drawable.ic_rocket2,
                     null,
                     false,
@@ -150,7 +152,7 @@ public class ActivityOnboarding extends AppCompatActivity {
         slides.add(new OnboardingSlideUi(
                 R.string.onboarding_blockingmode_title,
                 getString(R.string.onboarding_blockingmode_title),
-                getText(R.string.onboarding_blockingmode_desc).toString(),
+                getText(R.string.onboarding_blockingmode_desc),
                 R.drawable.ic_rocket2,
                 null,
                 false,
@@ -162,7 +164,7 @@ public class ActivityOnboarding extends AppCompatActivity {
             slides.add(new OnboardingSlideUi(
                     R.string.onboarding_vpn_title,
                     getString(R.string.onboarding_vpn_title),
-                    getText(R.string.onboarding_vpn_desc).toString(),
+                    getText(R.string.onboarding_vpn_desc),
                     R.drawable.lockdown,
                     vpnPrepared ? getString(R.string.onboarding_action_granted)
                             : getString(R.string.onboarding_vpn_action),
@@ -189,7 +191,7 @@ public class ActivityOnboarding extends AppCompatActivity {
             slides.add(new OnboardingSlideUi(
                     R.string.onboarding_lockdown_title,
                     getString(R.string.onboarding_lockdown_title),
-                    getText(R.string.onboarding_lockdown_desc).toString(),
+                    getText(R.string.onboarding_lockdown_desc),
                     R.drawable.lockdown,
                     actionText,
                     actionEnabled,
@@ -202,7 +204,7 @@ public class ActivityOnboarding extends AppCompatActivity {
             slides.add(new OnboardingSlideUi(
                     R.string.onboarding_notify_title,
                     getString(R.string.onboarding_notify_title),
-                    getText(R.string.onboarding_notify_desc).toString(),
+                    getText(R.string.onboarding_notify_desc),
                     R.drawable.twotone_notifications_24,
                     canNotify ? getString(R.string.onboarding_action_granted)
                             : getString(R.string.onboarding_notify_action),
@@ -214,7 +216,7 @@ public class ActivityOnboarding extends AppCompatActivity {
         slides.add(new OnboardingSlideUi(
                 R.string.onboarding_timeline_title,
                 getString(R.string.onboarding_timeline_title),
-                getText(R.string.onboarding_timeline_desc).toString(),
+                getText(R.string.onboarding_timeline_desc),
                 R.drawable.ic_history,
                 null,
                 false,

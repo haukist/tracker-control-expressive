@@ -154,10 +154,11 @@ fun VpnScreenContent(
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(ExpressiveGroupSpacing),
     ) {
         item(key = "status_hero") {
             VpnStatusHeroCard(model = model, callbacks = callbacks)
+            Spacer(modifier = Modifier.height(10.dp))
         }
 
         if (model.isFirstTimeSetup) {
@@ -172,17 +173,20 @@ fun VpnScreenContent(
                 selectedMode = model.providerMode,
                 onSelectMode = callbacks::onSelectProviderMode,
             )
+            Spacer(modifier = Modifier.height(10.dp))
         }
 
         if (!model.progressMessage.isNullOrBlank()) {
             item(key = "progress") {
                 VpnProgressCard(message = model.progressMessage)
+                Spacer(modifier = Modifier.height(10.dp))
             }
         }
 
         if (model.countryErrorVisible && model.providerMode != "wireguard") {
             item(key = "country_error") {
                 VpnCountryErrorCard(onRetry = callbacks::onRetryCountries)
+                Spacer(modifier = Modifier.height(10.dp))
             }
         }
 
@@ -201,6 +205,7 @@ fun VpnScreenContent(
                             modifier = Modifier.padding(20.dp),
                         )
                     }
+                    Spacer(modifier = Modifier.height(10.dp))
                 }
             } else {
                 itemsIndexed(
@@ -217,6 +222,7 @@ fun VpnScreenContent(
             }
 
             item(key = "wg_footer") {
+                Spacer(modifier = Modifier.height(10.dp))
                 VpnWireGuardFooter(
                     manageLabel = model.wireGuardFooterLabel,
                     onManageProfiles = { callbacks.onOpenWireGuardProfiles(null) },
@@ -623,9 +629,9 @@ private fun VpnCountryRow(
         count = count,
         color = containerColor,
         contentColor = contentColor,
-        modifier = Modifier
-            .alpha(if (country.enabled || country.isGenerating) 1f else 0.5f)
-            .clickable(enabled = country.enabled, onClick = onClick),
+        onClick = onClick,
+        enabled = country.enabled,
+        modifier = Modifier.alpha(if (country.enabled || country.isGenerating) 1f else 0.5f),
     ) {
         Row(
             modifier = Modifier
@@ -681,9 +687,9 @@ private fun VpnCustomProfileRow(
         count = count,
         color = containerColor,
         contentColor = contentColor,
-        modifier = Modifier
-            .alpha(if (profile.enabled) 1f else 0.5f)
-            .clickable(enabled = profile.enabled, onClick = onClick),
+        onClick = onClick,
+        enabled = profile.enabled,
+        modifier = Modifier.alpha(if (profile.enabled) 1f else 0.5f),
     ) {
         Row(
             modifier = Modifier
@@ -728,7 +734,7 @@ private fun VpnWireGuardFooter(
         ExpressiveGroupedSurface(
             index = 0,
             count = 2,
-            modifier = Modifier.clickable(onClick = onManageProfiles),
+            onClick = onManageProfiles,
         ) {
             Row(
                 modifier = Modifier
@@ -752,7 +758,7 @@ private fun VpnWireGuardFooter(
         ExpressiveGroupedSurface(
             index = 1,
             count = 2,
-            modifier = Modifier.clickable(onClick = onProtonSetup),
+            onClick = onProtonSetup,
         ) {
             Row(
                 modifier = Modifier

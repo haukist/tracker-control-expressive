@@ -1,5 +1,6 @@
 package net.kollnig.missioncontrol.tailscale;
 
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.net.Uri;
@@ -13,6 +14,7 @@ import androidx.preference.PreferenceScreen;
 import eu.faircode.netguard.ServiceSinkhole;
 import eu.faircode.netguard.SwitchPreference;
 import net.kollnig.missioncontrol.R;
+import net.kollnig.missioncontrol.vpn.VpnEgressPolicy;
 
 /** Settings actions; engine/authentication work stays off the UI thread. */
 public final class TailscaleSettings {
@@ -26,6 +28,79 @@ public final class TailscaleSettings {
         this.prefs = prefs;
     }
 
+    public boolean canOrConfirmEnable(String key, Runnable onConfirmed) {
+        if (!VpnEgressPolicy.canEnable(prefs, key)) {
+            toast(R.string.msg_ts_exclusive);
+            return false;
+        }
+        if ("ts_enabled".equals(key)) {
+            new AlertDialog.Builder(activity).setTitle(R.string.setting_ts_title)
+                    .setMessage(R.string.summary_ts_enabled)
+                    .setPositiveButton(android.R.string.ok, (dialog, which) -> {
+                        if (VpnEgressPolicy.canEnable(prefs, key)) {
+                            onConfirmed.run();
+                        } else {
+                            toast(R.string.msg_ts_exclusive);
+                        }
+                    }).setNegativeButton(android.R.string.cancel, null).show();
+            return false;
+        }
+        return true;
+    }
+
+    public void requestLogin() {
+        if (!prefs.getBoolean("enabled", false)) {
+            toast(R.string.msg_ts_start_protection);
+            return;
+        }
+        awaitingLogin = true;
+        if (!openLogin()) ServiceSinkhole.tailscaleAuthentication(activity, false);
+    }
+
+    public void requestLogout() {
+        new AlertDialog.Builder(activity).setTitle(R.string.setting_ts_logout)
+                .setMessage(R.string.msg_ts_logout_confirm)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(android.R.string.ok, (dialog, which) -> {
+                    awaitingLogin = false;
+                    ServiceSinkhole.tailscaleAuthentication(activity, true);
+                }).show();
+    }
+
+    public void onStatusChanged() {
+        TailscaleSnapshot state = TailscaleManager.snapshot();
+        boolean enabled = prefs.getBoolean("ts_enabled", false);
+        if (!enabled || !prefs.getBoolean("enabled", false) || !state.error.isEmpty()
+                || "Running".equals(state.state)) {
+            awaitingLogin = false;
+        }
+        if (awaitingLogin) openLogin();
+    }
+
+    public static String buildSummary(
+            Context context,
+            SharedPreferences prefs,
+            TailscaleSnapshot state) {
+        boolean enabled = prefs.getBoolean("ts_enabled", false);
+        int status = R.string.ts_state_waiting;
+        if (!enabled) status = R.string.ts_state_off;
+        else if (!state.error.isEmpty()) status = R.string.ts_state_error;
+        else if ("Running".equals(state.state)) status = R.string.ts_state_connected;
+        else if ("NeedsLogin".equals(state.state)) status = R.string.ts_state_login;
+        else if ("NeedsMachineAuth".equals(state.state)) status = R.string.ts_state_approval;
+        String summary = context.getString(status);
+        if (enabled && !state.error.isEmpty()) summary += "\n" + state.error;
+        if (enabled && !state.ipv4.isEmpty()) summary += "\n" + state.ipv4;
+        if (enabled && !state.ipv6.isEmpty()) summary += "\n" + state.ipv6;
+        if (enabled && "Running".equals(state.state) && !state.magicDNS)
+            summary += "\n" + context.getString(R.string.ts_magicdns_off);
+        return summary;
+    }
+
+    public static boolean isLoginEnabled(SharedPreferences prefs, TailscaleSnapshot state) {
+        return prefs.getBoolean("ts_enabled", false) && !"Running".equals(state.state);
+    }
+
     public void configure(PreferenceScreen screen) {
         this.screen = screen;
         net.kollnig.missioncontrol.diagnostics.BatteryExperimentHooks.configurePreference(activity, screen);
@@ -34,40 +109,17 @@ public final class TailscaleSettings {
             if (pref == null) continue;
             pref.setOnPreferenceChangeListener((preference, next) -> {
                 if (!Boolean.TRUE.equals(next)) return true;
-                if (!net.kollnig.missioncontrol.vpn.VpnEgressPolicy.canEnable(prefs, key)) {
-                    toast(R.string.msg_ts_exclusive);
-                    return false;
-                }
-                if (key.equals("ts_enabled")) {
-                    new AlertDialog.Builder(activity).setTitle(R.string.setting_ts_title)
-                            .setMessage(R.string.summary_ts_enabled)
-                            .setPositiveButton(android.R.string.ok, (dialog, which) -> {
-                                if (net.kollnig.missioncontrol.vpn.VpnEgressPolicy.canEnable(prefs, key))
-                                    ((SwitchPreference) preference).setChecked(true);
-                                else
-                                    toast(R.string.msg_ts_exclusive);
-                            }).setNegativeButton(android.R.string.cancel, null).show();
-                    return false;
-                }
-                return true;
+                return canOrConfirmEnable(key, () -> ((SwitchPreference) preference).setChecked(true));
             });
         }
         Preference login = screen.findPreference("ts_login");
         if (login != null) login.setOnPreferenceClickListener(preference -> {
-            if (!prefs.getBoolean("enabled", false)) { toast(R.string.msg_ts_start_protection); return true; }
-            awaitingLogin = true;
-            if (!openLogin()) ServiceSinkhole.tailscaleAuthentication(activity, false);
+            requestLogin();
             return true;
         });
         Preference logout = screen.findPreference("ts_logout");
         if (logout != null) logout.setOnPreferenceClickListener(preference -> {
-            new AlertDialog.Builder(activity).setTitle(R.string.setting_ts_logout)
-                    .setMessage(R.string.msg_ts_logout_confirm)
-                    .setNegativeButton(android.R.string.cancel, null)
-                    .setPositiveButton(android.R.string.ok, (dialog, which) -> {
-                        awaitingLogin = false;
-                        ServiceSinkhole.tailscaleAuthentication(activity, true);
-                    }).show();
+            requestLogout();
             return true;
         });
         update();
@@ -75,29 +127,15 @@ public final class TailscaleSettings {
 
     public void update() {
         if (screen == null) return;
+        onStatusChanged();
         TailscaleSnapshot state = TailscaleManager.snapshot();
-        boolean enabled = prefs.getBoolean("ts_enabled", false);
-        if (!enabled || !prefs.getBoolean("enabled", false) || !state.error.isEmpty()
-                || state.state.equals("Running")) awaitingLogin = false;
-        int status = R.string.ts_state_waiting;
-        if (!enabled) status = R.string.ts_state_off;
-        else if (!state.error.isEmpty()) status = R.string.ts_state_error;
-        else if (state.state.equals("Running")) status = R.string.ts_state_connected;
-        else if (state.state.equals("NeedsLogin")) status = R.string.ts_state_login;
-        else if (state.state.equals("NeedsMachineAuth")) status = R.string.ts_state_approval;
-        String summary = activity.getString(status);
-        if (enabled && !state.error.isEmpty()) summary += "\n" + state.error;
-        if (enabled && !state.ipv4.isEmpty()) summary += "\n" + state.ipv4;
-        if (enabled && !state.ipv6.isEmpty()) summary += "\n" + state.ipv6;
-        if (enabled && state.state.equals("Running") && !state.magicDNS)
-            summary += "\n" + activity.getString(R.string.ts_magicdns_off);
+        String summary = buildSummary(activity, prefs, state);
         for (String key : new String[]{"ts_status", "screen_tailscale"}) {
             Preference preference = screen.findPreference(key);
             if (preference != null) preference.setSummary(summary);
         }
         Preference login = screen.findPreference("ts_login");
-        if (login != null) login.setEnabled(enabled && !state.state.equals("Running"));
-        if (awaitingLogin) openLogin();
+        if (login != null) login.setEnabled(isLoginEnabled(prefs, state));
     }
 
     private boolean openLogin() {

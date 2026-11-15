@@ -50,8 +50,6 @@ import android.text.TextUtils;
 import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
-import android.view.ViewGroup;
-import android.widget.FrameLayout;
 import android.widget.Toast;
 
 import androidx.activity.OnBackPressedCallback;
@@ -62,9 +60,11 @@ import androidx.compose.ui.platform.ComposeView;
 import androidx.core.app.ActivityCompat;
 import androidx.core.app.PendingIntentCompat;
 import androidx.core.content.ContextCompat;
-import androidx.fragment.app.FragmentContainerView;
+import androidx.fragment.app.Fragment;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 import androidx.preference.PreferenceManager;
+import androidx.viewpager2.adapter.FragmentStateAdapter;
+import androidx.viewpager2.widget.ViewPager2;
 
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.opencsv.CSVWriter;
@@ -108,15 +108,19 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
     private static final String TAG = "TrackerControl.Main";
     private static final String KEY_SELECTED_TAB = "selected_tab";
 
+    private static final long SEARCH_DEBOUNCE_MS = 150L;
+
     private boolean running = false;
     private MainScreenController screenController;
+    private OnBackPressedCallback backPressedCallback;
     private int selectedTab = MainTabs.TIMELINE;
-    private boolean vpnFragmentRequested = false;
     private AlertDialog dialogVpn = null;
 
-    private final List<Rule> allRules = new ArrayList<>();
-    private List<Rule> searchPool = null;
+    private final List<AppRuleUi> cachedAllAppItems = new ArrayList<>();
+    private final List<AppRuleUi> cachedSearchAppItems = new ArrayList<>();
+    private boolean hasSearchPool = false;
     private String searchQuery = "";
+    private String appliedSearchQuery = "";
     private boolean searchOpen = false;
     private boolean refreshingApps = false;
     private boolean queueActive = false;
@@ -154,11 +158,29 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
     private boolean autofillUnavailable = false;
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private final Runnable debouncedAccessRender = this::renderMainScreen;
+    private final Runnable debouncedSearchRender = () -> {
+        appliedSearchQuery = searchQuery == null ? "" : searchQuery;
+        renderMainScreen();
+    };
     private String cachedCopyright = "";
     private boolean cachedShowInvite = false;
     private boolean cachedShowSupport = false;
     private boolean cachedEnableMoreApps = false;
     private boolean cachedShowRate = false;
+    private boolean cachedBatteryOptimizing = false;
+    private boolean cachedDataSaving = false;
+    private boolean cachedLocalNetworkEnforced = false;
+    private boolean cachedLocalNetworkGranted = false;
+
+    private static final class AppListSnapshot {
+        final List<AppRuleUi> allItems;
+        final List<AppRuleUi> searchItems;
+
+        AppListSnapshot(List<AppRuleUi> allItems, List<AppRuleUi> searchItems) {
+            this.allItems = allItems;
+            this.searchItems = searchItems;
+        }
+    }
 
     @Override
     public Object getSystemService(@NonNull String name) {
@@ -221,34 +243,12 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
             return;
         }
 
-        if (prefs.getBoolean("protection_disabled_by_user", false)) {
-            prefs.edit()
-                    .putBoolean("enabled", false)
-                    .remove("protection_disabled_by_user")
-                    .apply();
-        }
-
         Util.setTheme(this);
         super.onCreate(savedInstanceState);
 
-        FrameLayout rootFrame = new FrameLayout(this);
         ComposeView root = new ComposeView(this);
         root.setId(R.id.compose_main);
-        rootFrame.addView(root, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT));
-
-        FragmentContainerView timelineContainer = new FragmentContainerView(this);
-        timelineContainer.setId(R.id.timelineContainer);
-        timelineContainer.setVisibility(View.GONE);
-        rootFrame.addView(timelineContainer, new FrameLayout.LayoutParams(0, 0));
-
-        FragmentContainerView vpnContainer = new FragmentContainerView(this);
-        vpnContainer.setId(R.id.vpnContainer);
-        vpnContainer.setVisibility(View.GONE);
-        rootFrame.addView(vpnContainer, new FrameLayout.LayoutParams(0, 0));
-
-        setContentView(rootFrame);
+        setContentView(root);
 
         running = true;
 
@@ -260,6 +260,7 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
         cachedShowSupport = getIntentSupport(this).resolveActivity(pm) != null;
         cachedEnableMoreApps = getIntentApps(this).resolveActivity(pm) != null;
         cachedShowRate = getIntentRate(this).resolveActivity(pm) != null;
+        refreshTroubleshootingCache();
 
         boolean enabled = prefs.getBoolean("enabled", false);
         final boolean initialized = prefs.getBoolean("initialized", false);
@@ -277,40 +278,47 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
 
         if (savedInstanceState == null) {
             selectedTab = MainTabs.TIMELINE;
-            getSupportFragmentManager()
-                    .beginTransaction()
-                    .replace(R.id.timelineContainer, new TimelineFragment())
-                    .commit();
         } else {
             selectedTab = savedInstanceState.getInt(KEY_SELECTED_TAB, MainTabs.TIMELINE);
-            if (selectedTab == MainTabs.VPN)
-                ensureVpnFragment();
         }
 
-        screenController = MainScreen.installWithFragmentContainers(
+        ViewPager2 fragmentPager = new ViewPager2(this);
+        fragmentPager.setId(R.id.main_fragment_pager);
+        fragmentPager.setUserInputEnabled(false);
+        fragmentPager.setAdapter(new FragmentStateAdapter(this) {
+            @Override
+            public int getItemCount() {
+                return 2;
+            }
+
+            @NonNull
+            @Override
+            public Fragment createFragment(int position) {
+                return position == 1 ? new VpnFragment() : new TimelineFragment();
+            }
+        });
+
+        screenController = MainScreen.installWithPager(
                 root,
                 createCallbacks(prefs),
-                timelineContainer,
-                vpnContainer);
+                fragmentPager);
 
-        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+        backPressedCallback = new OnBackPressedCallback(false) {
             @Override
             public void handleOnBackPressed() {
                 if (searchOpen) {
+                    uiHandler.removeCallbacks(debouncedSearchRender);
                     searchOpen = false;
                     searchQuery = "";
+                    appliedSearchQuery = "";
                     getIntent().removeExtra(EXTRA_SEARCH);
                     renderMainScreen();
-                    return;
-                }
-                if (selectedTab != MainTabs.APPS) {
+                } else if (selectedTab != MainTabs.APPS) {
                     selectTab(MainTabs.APPS);
-                    return;
                 }
-                setEnabled(false);
-                getOnBackPressedDispatcher().onBackPressed();
             }
-        });
+        };
+        getOnBackPressedDispatcher().addCallback(this, backPressedCallback);
 
         prefs.registerOnSharedPreferenceChangeListener(this);
 
@@ -340,6 +348,7 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
             selectedTab = MainTabs.APPS;
             searchOpen = true;
             searchQuery = initialSearch;
+            appliedSearchQuery = initialSearch;
         }
 
         renderMainScreen();
@@ -367,9 +376,11 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
 
             @Override
             public void onSearchOpenChanged(boolean open) {
+                uiHandler.removeCallbacks(debouncedSearchRender);
                 searchOpen = open;
                 if (!open) {
                     searchQuery = "";
+                    appliedSearchQuery = "";
                     getIntent().removeExtra(EXTRA_SEARCH);
                 }
                 renderMainScreen();
@@ -378,7 +389,38 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
             @Override
             public void onSearchQueryChanged(@NonNull String query) {
                 searchQuery = query;
-                renderMainScreen();
+                uiHandler.removeCallbacks(debouncedSearchRender);
+                if (query.trim().isEmpty()) {
+                    appliedSearchQuery = "";
+                    renderMainScreen();
+                } else {
+                    MainScreenModel current = screenController.getModel();
+                    screenController.update(new MainScreenModel(
+                            current.getSelectedTab(),
+                            current.isProtectionEnabled(),
+                            current.getBlockingModeLabel(),
+                            current.isNetworkActive(),
+                            current.isQueueActive(),
+                            current.isMetered(),
+                            query,
+                            current.isSearchOpen(),
+                            current.isRefreshing(),
+                            current.getShowPushHint(),
+                            current.getShowSystemHint(),
+                            current.getBanners(),
+                            current.getFilter(),
+                            current.getApps(),
+                            current.getShowInviteMenu(),
+                            current.getShowSupportMenu(),
+                            current.getEnableMoreAppsMenu(),
+                            current.getShowRateButton(),
+                            current.getVersionName(),
+                            current.getVersionCode(),
+                            current.getCopyrightText(),
+                            current.getActiveDialog(),
+                            current.getTroubleshooting()));
+                    uiHandler.postDelayed(debouncedSearchRender, SEARCH_DEBOUNCE_MS);
+                }
             }
 
             @Override
@@ -405,6 +447,7 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
                     internetBlocklist.block(ActivityMain.this, app.getUid());
                     Toast.makeText(ActivityMain.this, R.string.internet_blocked, Toast.LENGTH_SHORT).show();
                 }
+                updateCachedInternetState(app.getUid(), !wasBlocked);
                 renderMainScreen();
             }
 
@@ -511,6 +554,9 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
 
             @Override
             public void onOpenDialog(@NonNull MainDialog dialog) {
+                if (dialog == MainDialog.TROUBLESHOOTING) {
+                    refreshTroubleshootingCache();
+                }
                 activeDialog = dialog;
                 renderMainScreen();
             }
@@ -674,6 +720,7 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
         if (lastLocalNetworkGrant != null && !lastLocalNetworkGrant && localNetworkGranted)
             ServiceSinkhole.reload("permission granted", this, false);
         lastLocalNetworkGrant = localNetworkGranted;
+        refreshTroubleshootingCache();
 
         refreshPrivateDnsBypassBanner();
         renderMainScreen();
@@ -690,6 +737,7 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
             return;
 
         uiHandler.removeCallbacks(debouncedAccessRender);
+        uiHandler.removeCallbacks(debouncedSearchRender);
         DatabaseHelper.getInstance(this).removeAccessChangedListener(accessChangedListener);
     }
 
@@ -728,6 +776,7 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
         }
 
         running = false;
+        uiHandler.removeCallbacksAndMessages(null);
 
         try {
             prefs.unregisterOnSharedPreferenceChangeListener(this);
@@ -782,7 +831,7 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
         } else if (requestCode == REQUEST_INVITE) {
             // Do nothing
         } else if (requestCode == REQUEST_DETAILS_UPDATED) {
-            renderMainScreen();
+            updateApplicationList(null);
         } else if (requestCode == REQUEST_EXPORT) {
             if (resultCode == RESULT_OK && data != null)
                 handleExport(data);
@@ -902,6 +951,7 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
             boolean granted = (grantResults.length > 0 &&
                     grantResults[0] == PackageManager.PERMISSION_GRANTED);
             lastLocalNetworkGrant = LocalNetworkAccess.isGranted(this);
+            refreshTroubleshootingCache();
             renderMainScreen();
             if (granted)
                 ServiceSinkhole.reload("permission granted", this, false);
@@ -989,31 +1039,20 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
         public void onReceive(Context context, Intent intent) {
             Log.i(TAG, "Received " + intent);
             Util.logExtras(intent);
+            MainScreen.clearIconCache();
             updateApplicationList(null);
         }
     };
 
     private void selectTab(int tab) {
         selectedTab = tab;
-        if (tab == MainTabs.VPN)
-            ensureVpnFragment();
         if (tab != MainTabs.APPS && searchOpen) {
+            uiHandler.removeCallbacks(debouncedSearchRender);
             searchOpen = false;
             searchQuery = "";
+            appliedSearchQuery = "";
         }
         renderMainScreen();
-    }
-
-    private void ensureVpnFragment() {
-        if (getSupportFragmentManager().findFragmentById(R.id.vpnContainer) != null)
-            return;
-        if (vpnFragmentRequested)
-            return;
-        vpnFragmentRequested = true;
-        getSupportFragmentManager()
-                .beginTransaction()
-                .replace(R.id.vpnContainer, new VpnFragment())
-                .commit();
     }
 
     private void checkExtras(Intent intent) {
@@ -1031,9 +1070,11 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
         refreshingApps = true;
         renderMainScreen();
 
-        new AsyncTask<Object, Object, Pair<List<Rule>, List<Rule>>>() {
+        new AsyncTask<Object, Object, AppListSnapshot>() {
             @Override
-            protected Pair<List<Rule>, List<Rule>> doInBackground(Object... arg) {
+            protected AppListSnapshot doInBackground(Object... arg) {
+                SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ActivityMain.this);
+                String sort = prefs.getString("sort", "trackers_week");
                 List<Rule> rules = Rule.getRules(false, true, ActivityMain.this);
                 List<Rule> pool = new ArrayList<>(rules);
                 Set<String> present = new HashSet<>();
@@ -1046,21 +1087,32 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
                 } catch (Throwable ex) {
                     Log.e(TAG, ex.toString() + "\n" + Log.getStackTraceString(ex));
                 }
-                return new Pair<>(rules, pool);
+                List<AppRuleUi> allItems = buildAppItems(rules, sort);
+                List<AppRuleUi> searchItems = buildAppItems(pool, sort);
+                return new AppListSnapshot(allItems, searchItems);
             }
 
             @Override
-            protected void onPostExecute(Pair<List<Rule>, List<Rule>> result) {
+            protected void onPostExecute(AppListSnapshot result) {
                 if (running && generation == rulesUpdateGeneration) {
-                    allRules.clear();
-                    if (result != null && result.first != null)
-                        allRules.addAll(result.first);
-                    searchPool = result != null ? result.second : null;
+                    cachedAllAppItems.clear();
+                    cachedSearchAppItems.clear();
+                    hasSearchPool = false;
+                    if (result != null) {
+                        if (result.allItems != null)
+                            cachedAllAppItems.addAll(result.allItems);
+                        if (result.searchItems != null) {
+                            cachedSearchAppItems.addAll(result.searchItems);
+                            hasSearchPool = true;
+                        }
+                    }
                     refreshingApps = false;
                     if (search != null) {
+                        uiHandler.removeCallbacks(debouncedSearchRender);
                         selectedTab = MainTabs.APPS;
                         searchOpen = true;
                         searchQuery = search;
+                        appliedSearchQuery = search;
                     }
                     renderMainScreen();
                 }
@@ -1070,101 +1122,62 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
 
     private void updateSearch(String search) {
         if (search != null) {
+            uiHandler.removeCallbacks(debouncedSearchRender);
             selectedTab = MainTabs.APPS;
             searchOpen = true;
             searchQuery = search;
+            appliedSearchQuery = search;
             renderMainScreen();
         }
     }
 
-    private synchronized List<Rule> getSearchPool() {
-        if (searchPool != null)
-            return searchPool;
-
-        List<Rule> pool = new ArrayList<>(allRules);
-        Set<String> present = new HashSet<>();
-        for (Rule rule : allRules)
-            present.add(rule.packageName);
-        try {
-            for (Rule stub : Rule.getSearchStubs(getApplicationContext()))
-                if (!present.contains(stub.packageName))
-                    pool.add(stub);
-        } catch (Throwable ex) {
-            Log.e(TAG, ex.toString() + "\n" + Log.getStackTraceString(ex));
-        }
-
-        searchPool = pool;
-        return pool;
+    private void refreshTroubleshootingCache() {
+        cachedBatteryOptimizing = Util.batteryOptimizing(this);
+        cachedDataSaving = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && Util.dataSaving(this);
+        cachedLocalNetworkEnforced = LocalNetworkAccess.isEnforced();
+        cachedLocalNetworkGranted = LocalNetworkAccess.isGranted(this);
     }
 
-    private void renderMainScreen() {
-        if (!running || screenController == null)
-            return;
+    private void updateCachedInternetState(int uid, boolean blockedInternet) {
+        updateInternetStateInList(cachedAllAppItems, uid, blockedInternet);
+        updateInternetStateInList(cachedSearchAppItems, uid, blockedInternet);
+    }
 
-        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
-        boolean enabled = prefs.getBoolean("enabled", false);
-
-        boolean canNotify = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-                        == PackageManager.PERMISSION_GRANTED;
-
-        int bypassState = enabled ? privateDnsWarningState : ServiceSinkhole.PRIVATE_DNS_WARNING_NONE;
-        String bypassMessage = null;
-        if (bypassState == ServiceSinkhole.PRIVATE_DNS_WARNING_HOSTNAME) {
-            String specifier = Util.getPrivateDnsSpecifier(this);
-            String resolver = TextUtils.isEmpty(specifier)
-                    ? getString(R.string.msg_private_dns_unknown_resolver)
-                    : specifier;
-            bypassMessage = getString(R.string.msg_private_dns_bypass_notify, resolver);
-        } else if (bypassState == ServiceSinkhole.PRIVATE_DNS_WARNING_ALLOWED_DOT) {
-            bypassMessage = getString(R.string.msg_private_dns_bypass_allowed_notify);
-        }
-
-        MainBannerState banners = new MainBannerState(
-                false,
-                prefs.getBoolean("log_logcat", false),
-                !canNotify,
-                LocalNetworkAccess.isMissing(this),
-                enabled && Util.isPrivateDnsBlocked(this),
-                bypassMessage);
-
-        String sort = prefs.getString("sort", "trackers_week");
-        MainFilterState filter = new MainFilterState(
-                prefs.getBoolean("manage_system", false),
-                prefs.getBoolean("show_user", true),
-                prefs.getBoolean("show_system", false),
-                prefs.getBoolean("show_nointernet", true),
-                prefs.getBoolean("show_unprotected", false),
-                prefs.getBoolean("show_frozen", false),
-                sort);
-
-        List<Rule> filteredRules;
-        String queryStr = searchQuery == null ? "" : searchQuery.toLowerCase(Locale.ROOT).trim();
-        if (queryStr.isEmpty()) {
-            filteredRules = allRules;
-        } else {
-            filteredRules = new ArrayList<>();
-            int uid;
-            try {
-                uid = Integer.parseInt(queryStr);
-            } catch (NumberFormatException ignore) {
-                uid = -1;
-            }
-            for (Rule rule : getSearchPool()) {
-                if (rule.uid == uid ||
-                        rule.packageName.toLowerCase(Locale.ROOT).contains(queryStr) ||
-                        (rule.name != null && rule.name.toLowerCase(Locale.ROOT).contains(queryStr))) {
-                    filteredRules.add(rule);
-                }
+    private void updateInternetStateInList(List<AppRuleUi> items, int uid, boolean blockedInternet) {
+        for (int i = 0; i < items.size(); i++) {
+            AppRuleUi item = items.get(i);
+            if (item.getUid() == uid) {
+                String toggleCd;
+                if (!item.getHasInternet())
+                    toggleCd = getString(R.string.toggle_no_internet_description, item.getName());
+                else if (!item.isActiveProtection())
+                    toggleCd = getString(R.string.toggle_internet_unavailable_description, item.getName());
+                else if (blockedInternet)
+                    toggleCd = getString(R.string.toggle_allow_internet_description, item.getName());
+                else
+                    toggleCd = getString(R.string.toggle_block_internet_description, item.getName());
+                items.set(i, new AppRuleUi(
+                        item.getUid(),
+                        item.getPackageName(),
+                        item.getName(),
+                        item.getHasInternet(),
+                        item.isSystem(),
+                        item.isChanged(),
+                        item.isActiveProtection(),
+                        blockedInternet,
+                        item.getDetailsText(),
+                        toggleCd));
             }
         }
+    }
 
+    private List<AppRuleUi> buildAppItems(List<Rule> rules, String sort) {
         InternetBlocklist internetBlocklist = InternetBlocklist.getInstance(this);
         SharedPreferences minimalOnlyPrefs = getSharedPreferences("tracker_essential", Context.MODE_PRIVATE);
         boolean pastWeekOnly = !"trackers_all".equals(sort);
 
-        List<AppRuleUi> appItems = new ArrayList<>(filteredRules.size());
-        for (Rule rule : filteredRules) {
+        List<AppRuleUi> appItems = new ArrayList<>(rules.size());
+        for (Rule rule : rules) {
             boolean blockedInternet = internetBlocklist.blockedInternet(rule.uid);
             AppProtectionState state = AppProtectionState.resolve(
                     rule.apply,
@@ -1206,6 +1219,74 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
                     detailsText,
                     toggleCd));
         }
+        return appItems;
+    }
+
+    private void renderMainScreen() {
+        if (!running || screenController == null)
+            return;
+
+        if (backPressedCallback != null) {
+            backPressedCallback.setEnabled(searchOpen || selectedTab != MainTabs.APPS);
+        }
+
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        boolean enabled = prefs.getBoolean("enabled", false);
+
+        boolean canNotify = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                        == PackageManager.PERMISSION_GRANTED;
+
+        int bypassState = enabled ? privateDnsWarningState : ServiceSinkhole.PRIVATE_DNS_WARNING_NONE;
+        String bypassMessage = null;
+        if (bypassState == ServiceSinkhole.PRIVATE_DNS_WARNING_HOSTNAME) {
+            String specifier = Util.getPrivateDnsSpecifier(this);
+            String resolver = TextUtils.isEmpty(specifier)
+                    ? getString(R.string.msg_private_dns_unknown_resolver)
+                    : specifier;
+            bypassMessage = getString(R.string.msg_private_dns_bypass_notify, resolver);
+        } else if (bypassState == ServiceSinkhole.PRIVATE_DNS_WARNING_ALLOWED_DOT) {
+            bypassMessage = getString(R.string.msg_private_dns_bypass_allowed_notify);
+        }
+
+        MainBannerState banners = new MainBannerState(
+                prefs.getBoolean("log_logcat", false),
+                !canNotify,
+                LocalNetworkAccess.isMissing(this),
+                enabled && Util.isPrivateDnsBlocked(this),
+                bypassMessage);
+
+        String sort = prefs.getString("sort", "trackers_week");
+        MainFilterState filter = new MainFilterState(
+                prefs.getBoolean("manage_system", false),
+                prefs.getBoolean("show_user", true),
+                prefs.getBoolean("show_system", false),
+                prefs.getBoolean("show_nointernet", true),
+                prefs.getBoolean("show_unprotected", false),
+                prefs.getBoolean("show_frozen", false),
+                sort);
+
+        List<AppRuleUi> appItems;
+        String queryStr = appliedSearchQuery == null ? "" : appliedSearchQuery.toLowerCase(Locale.ROOT).trim();
+        if (queryStr.isEmpty()) {
+            appItems = new ArrayList<>(cachedAllAppItems);
+        } else {
+            List<AppRuleUi> pool = hasSearchPool ? cachedSearchAppItems : cachedAllAppItems;
+            appItems = new ArrayList<>();
+            int uid;
+            try {
+                uid = Integer.parseInt(queryStr);
+            } catch (NumberFormatException ignore) {
+                uid = -1;
+            }
+            for (AppRuleUi item : pool) {
+                if (item.getUid() == uid ||
+                        item.getPackageName().toLowerCase(Locale.ROOT).contains(queryStr) ||
+                        item.getName().toLowerCase(Locale.ROOT).contains(queryStr)) {
+                    appItems.add(item);
+                }
+            }
+        }
 
         String mode = BlockingMode.getMode(this);
         String modeLabel;
@@ -1217,10 +1298,10 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
             modeLabel = getString(R.string.blocking_mode_standard);
 
         TroubleshootingState troubleshooting = new TroubleshootingState(
-                Util.batteryOptimizing(this),
-                Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && Util.dataSaving(this),
-                LocalNetworkAccess.isEnforced(),
-                LocalNetworkAccess.isGranted(this));
+                cachedBatteryOptimizing,
+                cachedDataSaving,
+                cachedLocalNetworkEnforced,
+                cachedLocalNetworkGranted);
 
         boolean system = prefs.getBoolean("manage_system", false);
         screenController.update(new MainScreenModel(

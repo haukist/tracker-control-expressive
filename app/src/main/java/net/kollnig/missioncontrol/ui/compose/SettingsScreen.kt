@@ -30,7 +30,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -57,7 +56,6 @@ import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -71,6 +69,14 @@ enum class SettingsPage {
     WIREGUARD,
     TAILSCALE,
     DEVELOPMENT,
+}
+
+enum class SettingsInputKind {
+    TEXT,
+    NUMBER,
+    PASSWORD,
+    URI,
+    PHONE,
 }
 
 sealed interface SettingsItem {
@@ -104,7 +110,7 @@ sealed interface SettingsItem {
         override val enabled: Boolean = true,
     ) : SettingsItem
 
-    data class TextInputItem(
+    data class TextInputItem @JvmOverloads constructor(
         override val key: String,
         override val title: String,
         override val summary: String? = null,
@@ -112,6 +118,11 @@ sealed interface SettingsItem {
         val isPassword: Boolean = false,
         override val enabled: Boolean = true,
         val isNumber: Boolean = false,
+        val inputKind: SettingsInputKind = when {
+            isNumber -> SettingsInputKind.NUMBER
+            isPassword -> SettingsInputKind.PASSWORD
+            else -> SettingsInputKind.TEXT
+        },
     ) : SettingsItem {
         constructor(
             key: String,
@@ -120,10 +131,27 @@ sealed interface SettingsItem {
             value: String,
             isPassword: Boolean,
             enabled: Boolean,
-        ) : this(key, title, summary, value, isPassword, enabled, false)
+            inputKind: SettingsInputKind,
+        ) : this(
+            key = key,
+            title = title,
+            summary = summary,
+            value = value,
+            isPassword = isPassword || inputKind == SettingsInputKind.PASSWORD,
+            enabled = enabled,
+            isNumber = inputKind == SettingsInputKind.NUMBER,
+            inputKind = inputKind,
+        )
     }
 
     data class ActionItem(
+        override val key: String,
+        override val title: String,
+        override val summary: String? = null,
+        override val enabled: Boolean = true,
+    ) : SettingsItem
+
+    data class InfoItem(
         override val key: String,
         override val title: String,
         override val summary: String? = null,
@@ -239,6 +267,7 @@ fun SettingsScreenContent(
                                                 activeTextDialog = item
                                             is SettingsItem.ActionItem ->
                                                 callbacks.onActionClick(item.key)
+                                            is SettingsItem.InfoItem -> Unit
                                         }
                                     },
                                     onCheckedChange = { checked ->
@@ -286,68 +315,93 @@ private fun SettingsItemRow(
     onClick: () -> Unit,
     onCheckedChange: (Boolean) -> Unit,
 ) {
-    val interactionModifier = if (item is SettingsItem.SwitchItem) {
-        Modifier.toggleable(
-            value = item.checked,
-            enabled = item.enabled,
-            role = Role.Switch,
-            onValueChange = onCheckedChange,
-        )
-    } else {
-        Modifier.clickable(enabled = item.enabled, onClick = onClick)
+    when (item) {
+        is SettingsItem.SwitchItem -> {
+            ExpressiveGroupedSurface(
+                index = index,
+                count = count,
+                checked = item.checked,
+                onCheckedChange = onCheckedChange,
+                enabled = item.enabled,
+                modifier = Modifier
+                    .testTag("pref_${item.key}")
+                    .alpha(if (item.enabled) 1f else 0.5f),
+            ) {
+                SettingsItemRowContent(item)
+            }
+        }
+        is SettingsItem.InfoItem -> {
+            ExpressiveGroupedSurface(
+                index = index,
+                count = count,
+                modifier = Modifier
+                    .testTag("pref_${item.key}")
+                    .alpha(if (item.enabled) 1f else 0.5f),
+            ) {
+                SettingsItemRowContent(item)
+            }
+        }
+        else -> {
+            ExpressiveGroupedSurface(
+                index = index,
+                count = count,
+                onClick = onClick,
+                enabled = item.enabled,
+                modifier = Modifier
+                    .testTag("pref_${item.key}")
+                    .alpha(if (item.enabled) 1f else 0.5f),
+            ) {
+                SettingsItemRowContent(item)
+            }
+        }
     }
-    ExpressiveGroupedSurface(
-        index = index,
-        count = count,
-        modifier = Modifier
-            .testTag("pref_${item.key}")
-            .alpha(if (item.enabled) 1f else 0.5f)
-            .then(interactionModifier),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = item.title,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                val summary = item.summary
-                if (!summary.isNullOrBlank()) {
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = summary,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
+}
 
-            when (item) {
-                is SettingsItem.SwitchItem -> {
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Switch(
-                        checked = item.checked,
-                        onCheckedChange = null,
-                        enabled = item.enabled,
-                    )
-                }
-                is SettingsItem.NavigationItem -> {
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Icon(
-                        painter = painterResource(R.drawable.ic_chevron_right),
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                else -> Unit
+@Composable
+private fun SettingsItemRowContent(item: SettingsItem) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = item.title,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            val summary = item.summary
+            if (!summary.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = summary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
+        }
+
+        when (item) {
+            is SettingsItem.SwitchItem -> {
+                Spacer(modifier = Modifier.width(12.dp))
+                Switch(
+                    checked = item.checked,
+                    onCheckedChange = null,
+                    enabled = item.enabled,
+                )
+            }
+            is SettingsItem.NavigationItem -> {
+                Spacer(modifier = Modifier.width(12.dp))
+                Icon(
+                    painter = painterResource(R.drawable.ic_chevron_right),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            else -> Unit
         }
     }
 }
@@ -410,9 +464,15 @@ private fun SettingsTextInputDialog(
                 onValueChange = { text = it },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(
-                    keyboardType = if (item.isNumber) KeyboardType.Number else KeyboardType.Text,
+                    keyboardType = when (item.inputKind) {
+                        SettingsInputKind.NUMBER -> KeyboardType.Number
+                        SettingsInputKind.PASSWORD -> KeyboardType.Password
+                        SettingsInputKind.URI -> KeyboardType.Uri
+                        SettingsInputKind.PHONE -> KeyboardType.Phone
+                        SettingsInputKind.TEXT -> KeyboardType.Text
+                    },
                 ),
-                visualTransformation = if (item.isPassword) {
+                visualTransformation = if (item.isPassword || item.inputKind == SettingsInputKind.PASSWORD) {
                     PasswordVisualTransformation()
                 } else {
                     VisualTransformation.None

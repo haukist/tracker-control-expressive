@@ -115,8 +115,11 @@ import javax.xml.parsers.ParserConfigurationException;
 import javax.xml.parsers.SAXParserFactory;
 import androidx.activity.OnBackPressedCallback;
 import androidx.compose.ui.platform.ComposeView;
+import net.kollnig.missioncontrol.diagnostics.BatteryExperimentHooks;
 import net.kollnig.missioncontrol.tailscale.TailscaleManager;
+import net.kollnig.missioncontrol.tailscale.TailscaleSettings;
 import net.kollnig.missioncontrol.tailscale.TailscaleSnapshot;
+import net.kollnig.missioncontrol.ui.compose.SettingsInputKind;
 import net.kollnig.missioncontrol.ui.compose.SettingsItem;
 import net.kollnig.missioncontrol.ui.compose.SettingsPage;
 import net.kollnig.missioncontrol.ui.compose.SettingsScreen;
@@ -125,7 +128,6 @@ import net.kollnig.missioncontrol.ui.compose.SettingsScreenController;
 import net.kollnig.missioncontrol.ui.compose.SettingsScreenModel;
 import net.kollnig.missioncontrol.ui.compose.SettingsSection;
 import net.kollnig.missioncontrol.ui.compose.TrackerControlThemeKt;
-import net.kollnig.missioncontrol.vpn.VpnEgressPolicy;
 import kotlin.Pair;
 
 public class ActivitySettings extends AppCompatActivity implements SharedPreferences.OnSharedPreferenceChangeListener {
@@ -134,22 +136,13 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
     private boolean running = false;
     private SettingsScreenController screenController;
     private SettingsPage currentPage = SettingsPage.ROOT;
-    private boolean awaitingTailscaleLogin = false;
+    private TailscaleSettings tailscaleSettings;
 
     private final Handler wgStatusHandler = new Handler(Looper.getMainLooper());
     private final Runnable tailscaleStatusListener = () -> wgStatusHandler.post(() -> {
         if (!running) return;
-        if (awaitingTailscaleLogin) {
-            SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
-            TailscaleSnapshot state = TailscaleManager.snapshot();
-            if (!prefs.getBoolean("ts_enabled", false)
-                    || !prefs.getBoolean("enabled", false)
-                    || !state.error.isEmpty()
-                    || "Running".equals(state.state)) {
-                awaitingTailscaleLogin = false;
-            } else {
-                openTailscaleLogin();
-            }
+        if (tailscaleSettings != null) {
+            tailscaleSettings.onStatusChanged();
         }
         renderSettings();
     });
@@ -187,6 +180,7 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
         running = true;
 
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        tailscaleSettings = new TailscaleSettings(this, prefs);
         BlockingMode.enforcePlayStoreMode(this);
         new WgProfileManager(this).migrateIfNeeded();
 
@@ -269,7 +263,9 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
     @Override
     protected void onPause() {
         super.onPause();
-        awaitingTailscaleLogin = false;
+        if (tailscaleSettings != null) {
+            tailscaleSettings.cancelPendingLogin();
+        }
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
         prefs.unregisterOnSharedPreferenceChangeListener(this);
         net.kollnig.missioncontrol.wg.WgEgress.INSTANCE.removeStateListener(wgStatusListener);
@@ -285,27 +281,17 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
 
     private void handleSwitchToggle(String key, boolean checked, SharedPreferences prefs) {
         if (checked && ("ts_enabled".equals(key) || "wg_enabled".equals(key) || "socks5_enabled".equals(key))) {
-            if (!VpnEgressPolicy.canEnable(prefs, key)) {
-                Toast.makeText(this, R.string.msg_ts_exclusive, Toast.LENGTH_LONG).show();
+            boolean proceed = tailscaleSettings.canOrConfirmEnable(key, () -> {
+                prefs.edit().putBoolean(key, true).apply();
+                renderSettings();
+            });
+            if (!proceed) {
                 renderSettings();
                 return;
             }
-            if ("ts_enabled".equals(key)) {
-                new AlertDialog.Builder(this)
-                        .setTitle(R.string.setting_ts_title)
-                        .setMessage(R.string.summary_ts_enabled)
-                        .setPositiveButton(android.R.string.ok, (d, w) -> {
-                            if (VpnEgressPolicy.canEnable(prefs, key)) {
-                                prefs.edit().putBoolean(key, true).apply();
-                            } else {
-                                Toast.makeText(this, R.string.msg_ts_exclusive, Toast.LENGTH_LONG).show();
-                            }
-                            renderSettings();
-                        })
-                        .setNegativeButton(android.R.string.cancel, null)
-                        .show();
-                return;
-            }
+        }
+        if ("ts_enabled".equals(key) && !checked) {
+            tailscaleSettings.cancelPendingLogin();
         }
         if ("hosts_auto_update".equals(key)) {
             HostsDownloadWorker.scheduleAutoUpdate(this, checked);
@@ -326,7 +312,7 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
         renderSettings();
     }
 
-    private void handleTextInput(String key, String value, SharedPreferences prefs) {
+    void handleTextInput(String key, String value, SharedPreferences prefs) {
         String trimmed = value == null ? "" : value.trim();
         if ("doh_endpoint".equals(key)) {
             if (!isValidDohEndpoint(trimmed)) {
@@ -346,11 +332,11 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
                             ? (parsed >= 1 && parsed <= 65535)
                             : (parsed >= 0);
                     if (!valid) {
-                        Toast.makeText(this, android.R.string.VideoView_error_title, Toast.LENGTH_SHORT).show();
+                        Toast.makeText(this, R.string.msg_invalid_number, Toast.LENGTH_SHORT).show();
                         return;
                     }
                 } catch (NumberFormatException ex) {
-                    Toast.makeText(this, android.R.string.VideoView_error_title, Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this, R.string.msg_invalid_number, Toast.LENGTH_SHORT).show();
                     return;
                 }
             }
@@ -409,24 +395,13 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
                 startActivity(new Intent(this, net.kollnig.missioncontrol.ActivityWireGuardProfiles.class));
                 break;
             case "ts_login":
-                if (!prefs.getBoolean("enabled", false)) {
-                    Toast.makeText(this, R.string.msg_ts_start_protection, Toast.LENGTH_LONG).show();
-                    return;
-                }
-                awaitingTailscaleLogin = true;
-                if (!openTailscaleLogin())
-                    ServiceSinkhole.tailscaleAuthentication(this, false);
+                tailscaleSettings.requestLogin();
                 break;
             case "ts_logout":
-                new AlertDialog.Builder(this)
-                        .setTitle(R.string.setting_ts_logout)
-                        .setMessage(R.string.msg_ts_logout_confirm)
-                        .setNegativeButton(android.R.string.cancel, null)
-                        .setPositiveButton(android.R.string.ok, (d, w) -> {
-                            awaitingTailscaleLogin = false;
-                            ServiceSinkhole.tailscaleAuthentication(this, true);
-                        })
-                        .show();
+                tailscaleSettings.requestLogout();
+                break;
+            case "battery_experiment":
+                BatteryExperimentHooks.openActivity(this);
                 break;
             case "vpn_key_rotate_now":
                 Toast.makeText(this, R.string.msg_vpn_key_rotation_started, Toast.LENGTH_LONG).show();
@@ -436,21 +411,6 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
                                 Toast.makeText(this, summary, Toast.LENGTH_LONG).show()));
                 break;
         }
-    }
-
-    private boolean openTailscaleLogin() {
-        Uri uri = Uri.parse(TailscaleManager.loginUrl());
-        String host = uri.getHost();
-        if (!"https".equals(uri.getScheme()) || host == null
-                || !(host.equals("tailscale.com") || host.endsWith(".tailscale.com")))
-            return false;
-        awaitingTailscaleLogin = false;
-        try {
-            startActivity(new Intent(Intent.ACTION_VIEW, uri));
-        } catch (RuntimeException ex) {
-            Toast.makeText(this, R.string.msg_ts_browser_failed, Toast.LENGTH_LONG).show();
-        }
-        return true;
     }
 
     @Override
@@ -689,7 +649,7 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
                 "screen_tailscale",
                 SettingsPage.TAILSCALE,
                 getString(R.string.setting_ts_title),
-                getTailscaleSummary(prefs),
+                TailscaleSettings.buildSummary(this, prefs, TailscaleManager.snapshot()),
                 true));
         if (Util.isDebuggable(this)) {
             items.add(new SettingsItem.NavigationItem(
@@ -719,6 +679,7 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
                 getString(R.string.summary_pause),
                 prefs.getString("pause", "10"),
                 false,
+                true,
                 true));
 
         if (!Util.isFDroidInstall() && !playStore) {
@@ -753,7 +714,7 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
         items.add(new SettingsItem.SwitchItem(
                 "doh_enabled",
                 getString(R.string.setting_doh_enabled),
-                getString(R.string.summary_doh_enabled),
+                getString(R.string.summary_doh_enabled) + "\n" + getString(R.string.warning_beta),
                 dohEnabled,
                 true));
 
@@ -763,7 +724,8 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
                 prefs.getString("doh_endpoint", BuildConfig.DEFAULT_DOH_ENDPOINT),
                 prefs.getString("doh_endpoint", BuildConfig.DEFAULT_DOH_ENDPOINT),
                 false,
-                dohEnabled));
+                dohEnabled,
+                SettingsInputKind.URI));
 
         items.add(new SettingsItem.SwitchItem(
                 "doh_dns_fallback",
@@ -856,7 +818,8 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
                 null,
                 prefs.getString("vpn4", "10.1.10.1"),
                 false,
-                true));
+                true,
+                SettingsInputKind.PHONE));
         items.add(new SettingsItem.TextInputItem(
                 "vpn6",
                 getString(R.string.setting_vpn6, prefs.getString("vpn6", "fd00:1:fd00:1:fd00:1:fd00:1")),
@@ -956,7 +919,7 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
 
     private SettingsSection buildWireGuardSection(SharedPreferences prefs) {
         List<SettingsItem> items = new ArrayList<>();
-        items.add(new SettingsItem.ActionItem(
+        items.add(new SettingsItem.InfoItem(
                 "wg_status",
                 getString(R.string.setting_wg_status),
                 getWireGuardStatusSummary(prefs).toString(),
@@ -1018,10 +981,10 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
         TailscaleSnapshot state = TailscaleManager.snapshot();
         boolean enabled = prefs.getBoolean("ts_enabled", false);
 
-        items.add(new SettingsItem.ActionItem(
+        items.add(new SettingsItem.InfoItem(
                 "ts_status",
                 getString(R.string.setting_ts_status),
-                getTailscaleSummary(prefs),
+                TailscaleSettings.buildSummary(this, prefs, state),
                 true));
         items.add(new SettingsItem.SwitchItem(
                 "ts_enabled",
@@ -1033,12 +996,22 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
                 "ts_login",
                 getString(R.string.setting_ts_login),
                 null,
-                enabled && !"Running".equals(state.state)));
+                TailscaleSettings.isLoginEnabled(prefs, state)));
         items.add(new SettingsItem.ActionItem(
                 "ts_logout",
                 getString(R.string.setting_ts_logout),
                 null,
                 true));
+        if (BatteryExperimentHooks.isAvailable()) {
+            String experimentTitle = BatteryExperimentHooks.getTitle(this);
+            if (!TextUtils.isEmpty(experimentTitle)) {
+                items.add(new SettingsItem.ActionItem(
+                        "battery_experiment",
+                        experimentTitle,
+                        null,
+                        true));
+            }
+        }
 
         return new SettingsSection(getString(R.string.setting_ts_title), items);
     }
@@ -1070,24 +1043,6 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
                 getString(R.string.summary_vpn_key_rotate_now),
                 true));
         return new SettingsSection("Development", items);
-    }
-
-    private String getTailscaleSummary(SharedPreferences prefs) {
-        TailscaleSnapshot state = TailscaleManager.snapshot();
-        boolean enabled = prefs.getBoolean("ts_enabled", false);
-        int status = R.string.ts_state_waiting;
-        if (!enabled) status = R.string.ts_state_off;
-        else if (!state.error.isEmpty()) status = R.string.ts_state_error;
-        else if ("Running".equals(state.state)) status = R.string.ts_state_connected;
-        else if ("NeedsLogin".equals(state.state)) status = R.string.ts_state_login;
-        else if ("NeedsMachineAuth".equals(state.state)) status = R.string.ts_state_approval;
-        String summary = getString(status);
-        if (enabled && !state.error.isEmpty()) summary += "\n" + state.error;
-        if (enabled && !state.ipv4.isEmpty()) summary += "\n" + state.ipv4;
-        if (enabled && !state.ipv6.isEmpty()) summary += "\n" + state.ipv6;
-        if (enabled && "Running".equals(state.state) && !state.magicDNS)
-            summary += "\n" + getString(R.string.ts_magicdns_off);
-        return summary;
     }
 
     static void configureDohEndpointPreference(EditTextPreference preference) {

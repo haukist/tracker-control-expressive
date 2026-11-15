@@ -128,7 +128,7 @@ fun DetailsScreenContent(
                     Box {
                         IconButton(onClick = { showMenu = true }) {
                             Icon(
-                                painter = painterResource(android.R.drawable.ic_menu_more),
+                                painter = painterResource(R.drawable.ic_more_vert),
                                 contentDescription = stringResource(
                                     androidx.appcompat.R.string.abc_action_menu_overflow_description
                                 ),

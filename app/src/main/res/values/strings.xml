@@ -836,6 +836,7 @@ Sincerely,\n\n]]></string>
     <string name="title_delete_blocklist">Delete blocklist</string>
     <string name="msg_delete_blocklist_confirm">Are you sure you want to delete this blocklist?</string>
     <string name="msg_invalid_url">Invalid URL</string>
+    <string name="msg_invalid_number">Invalid number</string>
     <string name="msg_apply_blocklists_failed">Failed to apply blocklists</string>
     <string name="msg_last_update">Last update: %s</string>
 

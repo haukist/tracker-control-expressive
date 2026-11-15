@@ -37,8 +37,6 @@ class ActivityMainResearchNoticeTest {
                         banners = MainBannerState(showResearchMode = true),
                     ),
                     callbacks = noopCallbacks(),
-                    timelineContent = {},
-                    vpnContent = {},
                 )
             }
         }
@@ -56,8 +54,6 @@ class ActivityMainResearchNoticeTest {
                         banners = MainBannerState(showResearchMode = false),
                     ),
                     callbacks = noopCallbacks(),
-                    timelineContent = {},
-                    vpnContent = {},
                 )
             }
         }

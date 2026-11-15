@@ -17,9 +17,14 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.util.Xml;
 
+import android.os.Looper;
+
 import androidx.preference.EditTextPreference;
 import androidx.preference.PreferenceManager;
 import androidx.preference.PreferenceScreen;
+import androidx.work.Configuration;
+import androidx.work.testing.SynchronousExecutor;
+import androidx.work.testing.WorkManagerTestInitHelper;
 
 import java.io.StringWriter;
 import java.util.Collections;
@@ -33,8 +38,12 @@ import net.kollnig.missioncontrol.data.TrackerBlocklist;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.robolectric.Robolectric;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
+import org.robolectric.Shadows;
+import org.robolectric.android.controller.ActivityController;
+import org.robolectric.shadows.ShadowToast;
 
 @RunWith(RobolectricTestRunner.class)
 public class ActivitySettingsTest {
@@ -145,6 +154,44 @@ public class ActivitySettingsTest {
             assertEquals(invalidEndpoint, "https://dns.example/dns-query", preference.getText());
             assertEquals(invalidEndpoint, "https://dns.example/dns-query",
                     dohPreferences().getString(DOH_ENDPOINT_KEY, null));
+        }
+    }
+
+    @Test
+    public void handleTextInputValidatesNumericSettingsAndShowsAppToast() {
+        WorkManagerTestInitHelper.initializeTestWorkManager(context,
+                new Configuration.Builder().setExecutor(new SynchronousExecutor()).build());
+        ActivityController<ActivitySettings> controller = Robolectric.buildActivity(ActivitySettings.class).setup();
+        try {
+            ActivitySettings activity = controller.get();
+            SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(activity);
+
+            activity.handleTextInput("pause", "15", prefs);
+            assertEquals("15", prefs.getString("pause", null));
+
+            activity.handleTextInput("pause", "not_a_number", prefs);
+            assertEquals("15", prefs.getString("pause", null));
+            assertEquals(activity.getString(net.kollnig.missioncontrol.R.string.msg_invalid_number),
+                    ShadowToast.getTextOfLatestToast());
+
+            activity.handleTextInput("pause", "-5", prefs);
+            assertEquals("15", prefs.getString("pause", null));
+
+            activity.handleTextInput("socks5_port", "1080", prefs);
+            assertEquals("1080", prefs.getString("socks5_port", null));
+
+            activity.handleTextInput("socks5_port", "0", prefs);
+            assertEquals("1080", prefs.getString("socks5_port", null));
+
+            activity.handleTextInput("socks5_port", "70000", prefs);
+            assertEquals("1080", prefs.getString("socks5_port", null));
+
+            activity.handleTextInput("pause", "", prefs);
+            assertFalse(prefs.contains("pause"));
+            Shadows.shadowOf(Looper.getMainLooper()).idle();
+        } finally {
+            controller.pause().stop().destroy();
+            WorkManagerTestInitHelper.closeWorkDatabase();
         }
     }
 

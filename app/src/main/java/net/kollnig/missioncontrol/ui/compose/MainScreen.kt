@@ -22,7 +22,6 @@ import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.util.LruCache
 import android.view.View
-import android.widget.FrameLayout
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -51,7 +50,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -77,7 +75,7 @@ import androidx.compose.material3.WideNavigationRail
 import androidx.compose.material3.WideNavigationRailItem
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -86,17 +84,17 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
-import kotlin.math.roundToInt
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.platform.testTag
@@ -109,6 +107,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.viewpager2.widget.ViewPager2
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import net.kollnig.missioncontrol.R
@@ -140,7 +139,6 @@ data class AppRuleUi(
 )
 
 data class MainBannerState(
-    val showDisabled: Boolean = false,
     val showResearchMode: Boolean = false,
     val showNotifications: Boolean = false,
     val showLocalNetwork: Boolean = false,
@@ -234,24 +232,31 @@ class MainScreenController {
 
 object MainScreen {
     @JvmStatic
-    fun installWithFragmentContainers(
+    fun installWithPager(
         composeView: ComposeView,
         callbacks: MainScreenCallbacks,
-        timelineContainer: View,
-        vpnContainer: View,
+        fragmentPager: ViewPager2,
     ): MainScreenController = install(
         composeView = composeView,
         callbacks = callbacks,
-        timelineContent = { visible ->
-            FragmentContainerPlaceholder(
-                container = timelineContainer,
-                visible = visible,
-            )
-        },
-        vpnContent = { visible ->
-            FragmentContainerPlaceholder(
-                container = vpnContainer,
-                visible = visible,
+        fragmentPagerContent = { selectedTab ->
+            AndroidView(
+                factory = { fragmentPager },
+                update = { pager ->
+                    val targetPage = if (selectedTab == MainTabs.VPN) 1 else 0
+                    if (pager.currentItem != targetPage) {
+                        pager.setCurrentItem(targetPage, false)
+                    }
+                    val targetVisibility = if (selectedTab == MainTabs.APPS) View.GONE else View.VISIBLE
+                    if (pager.visibility != targetVisibility) {
+                        pager.visibility = targetVisibility
+                    }
+                },
+                modifier = if (selectedTab == MainTabs.APPS) {
+                    Modifier.size(0.dp)
+                } else {
+                    Modifier.fillMaxSize()
+                },
             )
         },
     )
@@ -260,8 +265,7 @@ object MainScreen {
     fun install(
         composeView: ComposeView,
         callbacks: MainScreenCallbacks,
-        timelineContent: @Composable (Boolean) -> Unit,
-        vpnContent: @Composable (Boolean) -> Unit,
+        fragmentPagerContent: @Composable (Int) -> Unit,
     ): MainScreenController {
         val controller = MainScreenController()
         composeView.setViewCompositionStrategy(
@@ -272,47 +276,16 @@ object MainScreen {
                 MainScreenContent(
                     model = controller.model,
                     callbacks = callbacks,
-                    timelineContent = timelineContent,
-                    vpnContent = vpnContent,
+                    fragmentPagerContent = fragmentPagerContent,
                 )
             }
         }
         return controller
     }
-}
 
-@Composable
-private fun FragmentContainerPlaceholder(
-    container: View,
-    visible: Boolean,
-) {
-    SideEffect {
-        val targetVisibility = if (visible) View.VISIBLE else View.GONE
-        if (container.visibility != targetVisibility) {
-            container.visibility = targetVisibility
-        }
-    }
-    if (visible) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .onGloballyPositioned { coords ->
-                    val pos = coords.positionInRoot()
-                    val left = pos.x.roundToInt()
-                    val top = pos.y.roundToInt()
-                    val width = coords.size.width
-                    val height = coords.size.height
-                    val lp = container.layoutParams as? FrameLayout.LayoutParams
-                        ?: FrameLayout.LayoutParams(width, height)
-                    if (lp.leftMargin != left || lp.topMargin != top || lp.width != width || lp.height != height) {
-                        lp.leftMargin = left
-                        lp.topMargin = top
-                        lp.width = width
-                        lp.height = height
-                        container.layoutParams = lp
-                    }
-                },
-        )
+    @JvmStatic
+    fun clearIconCache() {
+        appIconCache.evictAll()
     }
 }
 
@@ -321,13 +294,12 @@ private fun FragmentContainerPlaceholder(
 fun MainScreenContent(
     model: MainScreenModel,
     callbacks: MainScreenCallbacks,
-    timelineContent: @Composable (Boolean) -> Unit,
-    vpnContent: @Composable (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    fragmentPagerContent: @Composable (Int) -> Unit = {},
 ) {
     var showOverflowMenu by remember { mutableStateOf(false) }
-    var showFilterMenu by remember { mutableStateOf(false) }
     var showSortMenu by remember { mutableStateOf(false) }
+    val isSearchMode = model.isSearchOpen && model.selectedTab == MainTabs.APPS
 
     val navItems = listOf(
         Triple(MainTabs.TIMELINE, R.string.tab_timeline, R.drawable.ic_history),
@@ -370,30 +342,51 @@ fun MainScreenContent(
                             titleContentColor = MaterialTheme.colorScheme.onSurface,
                         ),
                         navigationIcon = {
-                            val iconRes = when {
-                                model.isQueueActive -> android.R.drawable.ic_menu_recent_history
-                                else -> R.drawable.ic_rocket2
-                            }
-                            Icon(
-                                painter = painterResource(iconRes),
-                                contentDescription = null,
-                                tint = if (model.isProtectionEnabled) {
-                                    MaterialTheme.colorScheme.primary
+                            if (isSearchMode) {
+                                IconButton(
+                                    onClick = {
+                                        callbacks.onSearchQueryChanged("")
+                                        callbacks.onSearchOpenChanged(false)
+                                    },
+                                    modifier = Modifier.testTag("search_back_button"),
+                                ) {
+                                    Icon(
+                                        painter = painterResource(R.drawable.ic_arrow_back),
+                                        contentDescription = stringResource(
+                                            androidx.appcompat.R.string.abc_action_bar_up_description
+                                        ),
+                                    )
+                                }
+                            } else {
+                                val iconRes = if (model.isQueueActive) {
+                                    R.drawable.ic_history
                                 } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                                modifier = Modifier
-                                    .padding(start = 12.dp, end = 4.dp)
-                                    .size(26.dp)
-                                    .alpha(if (model.isNetworkActive) 1f else 0.5f),
-                            )
+                                    R.drawable.ic_rocket2
+                                }
+                                Icon(
+                                    painter = painterResource(iconRes),
+                                    contentDescription = null,
+                                    tint = if (model.isProtectionEnabled) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    modifier = Modifier
+                                        .padding(start = 12.dp, end = 4.dp)
+                                        .size(26.dp)
+                                        .alpha(if (model.isNetworkActive) 1f else 0.5f),
+                                )
+                            }
                         },
                         title = {
-                            if (model.isSearchOpen && model.selectedTab == MainTabs.APPS) {
+                            if (isSearchMode) {
                                 SearchField(
                                     query = model.searchQuery,
                                     onQueryChange = callbacks::onSearchQueryChanged,
-                                    onClose = { callbacks.onSearchOpenChanged(false) },
+                                    onClose = {
+                                        callbacks.onSearchQueryChanged("")
+                                        callbacks.onSearchOpenChanged(false)
+                                    },
                                 )
                             } else {
                                 Column {
@@ -414,22 +407,22 @@ fun MainScreenContent(
                             }
                         },
                         actions = {
-                            val switchCd = stringResource(
-                                if (model.isProtectionEnabled) {
-                                    R.string.accessibility_tracker_blocking_enabled
-                                } else {
-                                    R.string.accessibility_tracker_blocking_disabled
-                                },
-                            )
-                            Switch(
-                                checked = model.isProtectionEnabled,
-                                onCheckedChange = callbacks::onToggleProtection,
-                                modifier = Modifier
-                                    .testTag("protection_switch")
-                                    .semantics { contentDescription = switchCd },
-                            )
+                            if (!isSearchMode) {
+                                val switchCd = stringResource(
+                                    if (model.isProtectionEnabled) {
+                                        R.string.accessibility_tracker_blocking_enabled
+                                    } else {
+                                        R.string.accessibility_tracker_blocking_disabled
+                                    },
+                                )
+                                Switch(
+                                    checked = model.isProtectionEnabled,
+                                    onCheckedChange = callbacks::onToggleProtection,
+                                    modifier = Modifier
+                                        .testTag("protection_switch")
+                                        .semantics { contentDescription = switchCd },
+                                )
 
-                            if (!model.isSearchOpen) {
                                 IconButton(
                                     onClick = {
                                         if (model.selectedTab != MainTabs.APPS) {
@@ -437,36 +430,36 @@ fun MainScreenContent(
                                         }
                                         callbacks.onSearchOpenChanged(true)
                                     },
+                                    modifier = Modifier.testTag("search_button"),
                                 ) {
                                     Icon(
-                                        painter = painterResource(android.R.drawable.ic_menu_search),
+                                        painter = painterResource(R.drawable.ic_search_white_24dp),
                                         contentDescription = stringResource(R.string.menu_search),
                                     )
                                 }
-                            }
 
-                            if (model.selectedTab == MainTabs.APPS) {
                                 Box {
-                                    IconButton(onClick = { showFilterMenu = true }) {
+                                    IconButton(
+                                        onClick = { showOverflowMenu = true },
+                                        modifier = Modifier.testTag("overflow_button"),
+                                    ) {
                                         Icon(
-                                            painter = painterResource(android.R.drawable.ic_menu_sort_by_size),
-                                            contentDescription = stringResource(R.string.menu_filter),
+                                            painter = painterResource(R.drawable.ic_more_vert),
+                                            contentDescription = stringResource(
+                                                androidx.appcompat.R.string.abc_action_menu_overflow_description
+                                            ),
                                         )
                                     }
-                                    FilterDropdownMenu(
-                                        expanded = showFilterMenu,
-                                        filter = model.filter,
-                                        onDismiss = { showFilterMenu = false },
-                                        onSetPref = callbacks::onSetFilterPref,
+                                    MainOverflowMenu(
+                                        expanded = showOverflowMenu,
+                                        model = model,
+                                        onDismiss = { showOverflowMenu = false },
+                                        onOpenSort = {
+                                            showOverflowMenu = false
+                                            showSortMenu = true
+                                        },
+                                        callbacks = callbacks,
                                     )
-                                }
-                                Box {
-                                    IconButton(onClick = { showSortMenu = true }) {
-                                        Icon(
-                                            painter = painterResource(android.R.drawable.ic_menu_sort_alphabetically),
-                                            contentDescription = stringResource(R.string.menu_sort),
-                                        )
-                                    }
                                     SortDropdownMenu(
                                         expanded = showSortMenu,
                                         currentSort = model.filter.sort,
@@ -477,23 +470,6 @@ fun MainScreenContent(
                                         },
                                     )
                                 }
-                            }
-
-                            Box {
-                                IconButton(onClick = { showOverflowMenu = true }) {
-                                    Icon(
-                                        painter = painterResource(android.R.drawable.ic_menu_more),
-                                        contentDescription = stringResource(
-                                            androidx.appcompat.R.string.abc_action_menu_overflow_description
-                                        ),
-                                    )
-                                }
-                                MainOverflowMenu(
-                                    expanded = showOverflowMenu,
-                                    model = model,
-                                    onDismiss = { showOverflowMenu = false },
-                                    callbacks = callbacks,
-                                )
                             }
                         },
                     )
@@ -529,24 +505,7 @@ fun MainScreenContent(
                     )
 
                     Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                        Box(
-                            modifier = if (model.selectedTab == MainTabs.TIMELINE) {
-                                Modifier.fillMaxSize()
-                            } else {
-                                Modifier.size(0.dp)
-                            },
-                        ) {
-                            timelineContent(model.selectedTab == MainTabs.TIMELINE)
-                        }
-                        Box(
-                            modifier = if (model.selectedTab == MainTabs.VPN) {
-                                Modifier.fillMaxSize()
-                            } else {
-                                Modifier.size(0.dp)
-                            },
-                        ) {
-                            vpnContent(model.selectedTab == MainTabs.VPN)
-                        }
+                        fragmentPagerContent(model.selectedTab)
                         if (model.selectedTab == MainTabs.APPS) {
                             AppsTabContent(
                                 model = model,
@@ -577,6 +536,10 @@ private fun SearchField(
     onClose: () -> Unit,
 ) {
     val keyboardController = LocalSoftwareKeyboardController.current
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        focusRequester.requestFocus()
+    }
     OutlinedTextField(
         value = query,
         onValueChange = onQueryChange,
@@ -590,8 +553,8 @@ private fun SearchField(
                 },
             ) {
                 Icon(
-                    painter = painterResource(android.R.drawable.ic_menu_close_clear_cancel),
-                    contentDescription = null,
+                    painter = painterResource(R.drawable.ic_close_white_24dp),
+                    contentDescription = stringResource(android.R.string.cancel),
                 )
             }
         },
@@ -599,7 +562,8 @@ private fun SearchField(
         keyboardActions = KeyboardActions(onSearch = { keyboardController?.hide() }),
         modifier = Modifier
             .fillMaxWidth()
-            .padding(end = 8.dp),
+            .focusRequester(focusRequester)
+            .testTag("main_search_field"),
     )
 }
 
@@ -690,7 +654,6 @@ private fun AppsTabContent(
                     ProtectionHeroCard(
                         enabled = model.isProtectionEnabled,
                         blockingModeLabel = model.blockingModeLabel,
-                        onToggle = callbacks::onToggleProtection,
                     )
                     Spacer(modifier = Modifier.height(10.dp))
                 }
@@ -744,7 +707,6 @@ private fun AppsTabContent(
 private fun ProtectionHeroCard(
     enabled: Boolean,
     blockingModeLabel: String,
-    onToggle: (Boolean) -> Unit,
 ) {
     val containerColor = if (enabled) {
         MaterialTheme.colorScheme.primaryContainer
@@ -795,10 +757,6 @@ private fun ProtectionHeroCard(
                     )
                 }
             }
-            Switch(
-                checked = enabled,
-                onCheckedChange = onToggle,
-            )
         }
     }
 }
@@ -889,8 +847,8 @@ private fun AppRuleRow(
     ExpressiveGroupedSurface(
         index = index,
         count = count,
+        onClick = onOpenDetails,
         color = containerColor,
-        modifier = Modifier.clickable(onClick = onOpenDetails),
     ) {
         Row(
             modifier = Modifier
@@ -963,15 +921,17 @@ private fun AppIconImage(
     onClick: () -> Unit,
 ) {
     val context = LocalContext.current
+    val sizePx = with(LocalDensity.current) { 40.dp.roundToPx() }
     val bitmap by produceState<ImageBitmap?>(
         initialValue = appIconCache.get(packageName),
         key1 = packageName,
+        key2 = sizePx,
     ) {
         if (value != null) return@produceState
         value = withContext(Dispatchers.IO) {
             appIconCache.get(packageName) ?: runCatching {
                 val drawable = context.packageManager.getApplicationIcon(packageName)
-                drawableToBitmap(drawable, 96).asImageBitmap().also {
+                drawableToBitmap(drawable, sizePx).asImageBitmap().also {
                     appIconCache.put(packageName, it)
                 }
             }.getOrNull()
@@ -1020,59 +980,6 @@ private fun drawableToBitmap(drawable: Drawable, sizePx: Int): Bitmap {
 }
 
 @Composable
-private fun FilterDropdownMenu(
-    expanded: Boolean,
-    filter: MainFilterState,
-    onDismiss: () -> Unit,
-    onSetPref: (String, Boolean) -> Unit,
-) {
-    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
-        if (filter.manageSystem) {
-            FilterCheckItem(
-                label = stringResource(R.string.menu_app_user),
-                checked = filter.showUser,
-                onToggle = { onSetPref("show_user", !filter.showUser) },
-            )
-            FilterCheckItem(
-                label = stringResource(R.string.menu_app_system),
-                checked = filter.showSystem,
-                onToggle = { onSetPref("show_system", !filter.showSystem) },
-            )
-        }
-        FilterCheckItem(
-            label = stringResource(R.string.menu_app_nointernet),
-            checked = filter.showNoInternet,
-            onToggle = { onSetPref("show_nointernet", !filter.showNoInternet) },
-        )
-        FilterCheckItem(
-            label = stringResource(R.string.menu_app_unprotected),
-            checked = filter.showUnprotected,
-            onToggle = { onSetPref("show_unprotected", !filter.showUnprotected) },
-        )
-        FilterCheckItem(
-            label = stringResource(R.string.menu_app_frozen),
-            checked = filter.showFrozen,
-            onToggle = { onSetPref("show_frozen", !filter.showFrozen) },
-        )
-    }
-}
-
-@Composable
-private fun FilterCheckItem(
-    label: String,
-    checked: Boolean,
-    onToggle: () -> Unit,
-) {
-    DropdownMenuItem(
-        text = { Text(label) },
-        trailingIcon = {
-            Checkbox(checked = checked, onCheckedChange = null)
-        },
-        onClick = onToggle,
-    )
-}
-
-@Composable
 private fun SortDropdownMenu(
     expanded: Boolean,
     currentSort: String,
@@ -1103,9 +1010,23 @@ private fun MainOverflowMenu(
     expanded: Boolean,
     model: MainScreenModel,
     onDismiss: () -> Unit,
+    onOpenSort: () -> Unit,
     callbacks: MainScreenCallbacks,
 ) {
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        if (model.selectedTab == MainTabs.APPS) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.menu_sort)) },
+                leadingIcon = {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_sort_white_24dp),
+                        contentDescription = null,
+                    )
+                },
+                onClick = onOpenSort,
+            )
+            HorizontalDivider()
+        }
         DropdownMenuItem(
             text = { Text(stringResource(R.string.menu_log)) },
             onClick = {
@@ -1134,7 +1055,7 @@ private fun MainOverflowMenu(
 private fun LegendDialog(onDismiss: () -> Unit) {
     val entries = listOf(
         R.drawable.ic_rocket2 to R.string.msg_inactive,
-        android.R.drawable.ic_menu_recent_history to R.string.msg_queue,
+        R.drawable.ic_history to R.string.msg_queue,
         R.drawable.wifi_on to R.string.title_unmetered_allowed,
         R.drawable.wifi_off to R.string.title_unmetered_blocked,
         R.drawable.wifi_off_disabled to R.string.title_unmetered_disabled,

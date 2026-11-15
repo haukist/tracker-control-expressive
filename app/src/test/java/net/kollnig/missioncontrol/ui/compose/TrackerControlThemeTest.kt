@@ -3,6 +3,7 @@ package net.kollnig.missioncontrol.ui.compose
 import android.content.Context
 import android.view.ContextThemeWrapper
 import androidx.compose.ui.graphics.toArgb
+import androidx.core.graphics.ColorUtils
 import net.kollnig.missioncontrol.R
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -18,16 +19,30 @@ class TrackerControlThemeTest {
     @Config(qualifiers = "notnight")
     fun lightColourSchemeMatchesMaterialThemeAttributes() {
         val context = themedContext()
+        val scheme = trackerControlLightColours(context)
 
-        assertSchemeMatchesTheme(context, trackerControlLightColours(context))
+        assertSchemeMatchesTheme(context, scheme)
+        val lumBg = ColorUtils.calculateLuminance(scheme.background.toArgb())
+        val lumLow = ColorUtils.calculateLuminance(scheme.surfaceContainerLow.toArgb())
+        val lumContainer = ColorUtils.calculateLuminance(scheme.surfaceContainer.toArgb())
+        val lumHigh = ColorUtils.calculateLuminance(scheme.surfaceContainerHigh.toArgb())
+        val lumHighest = ColorUtils.calculateLuminance(scheme.surfaceContainerHighest.toArgb())
+        assertTrue(lumBg > lumLow && lumLow > lumContainer && lumContainer > lumHigh && lumHigh > lumHighest)
     }
 
     @Test
     @Config(qualifiers = "night")
     fun darkColourSchemeMatchesMaterialThemeAttributes() {
         val context = themedContext()
+        val scheme = trackerControlDarkColours(context)
 
-        assertSchemeMatchesTheme(context, trackerControlDarkColours(context))
+        assertSchemeMatchesTheme(context, scheme)
+        val lumBg = ColorUtils.calculateLuminance(scheme.background.toArgb())
+        val lumLow = ColorUtils.calculateLuminance(scheme.surfaceContainerLow.toArgb())
+        val lumContainer = ColorUtils.calculateLuminance(scheme.surfaceContainer.toArgb())
+        val lumHigh = ColorUtils.calculateLuminance(scheme.surfaceContainerHigh.toArgb())
+        val lumHighest = ColorUtils.calculateLuminance(scheme.surfaceContainerHighest.toArgb())
+        assertTrue(lumBg < lumLow && lumLow < lumContainer && lumContainer < lumHigh && lumHigh < lumHighest)
     }
 
     private fun themedContext(): Context {
