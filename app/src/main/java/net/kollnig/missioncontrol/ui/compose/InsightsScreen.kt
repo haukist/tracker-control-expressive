@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -321,10 +322,12 @@ private fun InsightsOverviewCard(
             contentColor = MaterialTheme.colorScheme.onSurface
         )
     ) {
+        // Top padding compensates for the 48.dp IconButton's 12.dp internal inset so
+        // the visual top, bottom, and side margins all stay 20.dp.
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(20.dp)
+                .heroCardPadding(20.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -346,10 +349,13 @@ private fun InsightsOverviewCard(
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 // No size() here: IconButton's own 48dp minimum touch target
-                // must survive; the glyph is sized on the Icon instead.
+                // must survive; the glyph is sized on the Icon instead, and
+                // offset aligns its right edge with the 20.dp content margin.
                 IconButton(
                     onClick = onShare,
-                    modifier = Modifier.testTag("insights-share")
+                    modifier = Modifier
+                        .offset(x = HeroShareButtonInset)
+                        .testTag("insights-share")
                 ) {
                     Icon(
                         painter = painterResource(R.drawable.ic_share),
@@ -362,7 +368,7 @@ private fun InsightsOverviewCard(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 16.dp),
+                    .padding(top = 4.dp),
                 verticalAlignment = Alignment.Bottom
             ) {
                 Column(modifier = Modifier.weight(1f)) {

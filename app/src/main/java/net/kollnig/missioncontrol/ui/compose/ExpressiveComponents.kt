@@ -51,12 +51,26 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import net.kollnig.missioncontrol.R
 
 private val GroupedOuterRadius = 24.dp
 private val GroupedInnerRadius = 6.dp
 val ExpressiveGroupSpacing = 2.dp
+// 48.dp minimum touch target minus 24.dp icon glyph, split equally on each side.
+internal val HeroShareButtonInset = 12.dp
+
+/**
+ * Applies uniform visual padding inside a hero card whose header contains a
+ * 48.dp share [IconButton], compensating on the top edge for its 12.dp inset.
+ */
+internal fun Modifier.heroCardPadding(base: Dp): Modifier = padding(
+    start = base,
+    top = base - HeroShareButtonInset,
+    end = base,
+    bottom = base,
+)
 
 /**
  * Returns Material 3 Expressive grouped-card corner geometry:

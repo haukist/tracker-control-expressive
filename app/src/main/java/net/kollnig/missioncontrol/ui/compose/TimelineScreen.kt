@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -414,7 +415,9 @@ private fun TimelineInsightsCard(
                     contentColor = MaterialTheme.colorScheme.onSurface
                 )
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
+                // Top padding compensates for the 48.dp IconButton's 12.dp internal inset so
+                // the visual top, bottom, and side margins all stay 16.dp.
+                Column(modifier = Modifier.heroCardPadding(16.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
@@ -435,10 +438,13 @@ private fun TimelineInsightsCard(
                             fontWeight = FontWeight.SemiBold
                         )
                         // No size() here: IconButton's own 48dp minimum touch
-                        // target must survive; the glyph is sized on the Icon.
+                        // target must survive; the glyph is sized on the Icon,
+                        // and offset aligns its right edge with the 16.dp content margin.
                         IconButton(
                             onClick = callbacks::onShareInsights,
-                            modifier = Modifier.semantics { contentDescription = shareLabel }
+                            modifier = Modifier
+                                .offset(x = HeroShareButtonInset)
+                                .semantics { contentDescription = shareLabel }
                         ) {
                             Icon(
                                 painter = painterResource(R.drawable.ic_share),
@@ -452,7 +458,7 @@ private fun TimelineInsightsCard(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(top = 10.dp),
+                            .padding(top = 2.dp),
                         verticalAlignment = Alignment.Bottom
                     ) {
                         Column(
