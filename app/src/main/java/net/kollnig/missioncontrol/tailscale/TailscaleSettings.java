@@ -6,14 +6,16 @@ import android.content.SharedPreferences;
 import android.net.Uri;
 import android.widget.Toast;
 
-import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.preference.Preference;
 import androidx.preference.PreferenceScreen;
 
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+
 import eu.faircode.netguard.ServiceSinkhole;
 import eu.faircode.netguard.SwitchPreference;
 import net.kollnig.missioncontrol.R;
+import net.kollnig.missioncontrol.ui.compose.TrackerControlThemeKt;
 import net.kollnig.missioncontrol.vpn.VpnEgressPolicy;
 
 /** Settings actions; engine/authentication work stays off the UI thread. */
@@ -34,7 +36,8 @@ public final class TailscaleSettings {
             return false;
         }
         if ("ts_enabled".equals(key)) {
-            new AlertDialog.Builder(activity).setTitle(R.string.setting_ts_title)
+            TrackerControlThemeKt.themedDialogBuilder(activity)
+                    .setTitle(R.string.setting_ts_title)
                     .setMessage(R.string.summary_ts_enabled)
                     .setPositiveButton(android.R.string.ok, (dialog, which) -> {
                         if (VpnEgressPolicy.canEnable(prefs, key)) {
@@ -58,7 +61,8 @@ public final class TailscaleSettings {
     }
 
     public void requestLogout() {
-        new AlertDialog.Builder(activity).setTitle(R.string.setting_ts_logout)
+        TrackerControlThemeKt.themedDialogBuilder(activity)
+                .setTitle(R.string.setting_ts_logout)
                 .setMessage(R.string.msg_ts_logout_confirm)
                 .setNegativeButton(android.R.string.cancel, null)
                 .setPositiveButton(android.R.string.ok, (dialog, which) -> {

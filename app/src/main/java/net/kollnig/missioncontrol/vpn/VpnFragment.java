@@ -1,6 +1,7 @@
 package net.kollnig.missioncontrol.vpn;
 
 import android.annotation.SuppressLint;
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
@@ -33,6 +34,7 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 
 import net.kollnig.missioncontrol.ActivityWireGuardProfiles;
 import net.kollnig.missioncontrol.R;
+import net.kollnig.missioncontrol.ui.compose.TrackerControlThemeKt;
 import net.kollnig.missioncontrol.ui.compose.VpnCountryUi;
 import net.kollnig.missioncontrol.ui.compose.VpnProfileUi;
 import net.kollnig.missioncontrol.ui.compose.VpnScreen;
@@ -784,32 +786,33 @@ public class VpnFragment extends Fragment implements SharedPreferences.OnSharedP
     }
 
     private void showMullvadSettingsDialog() {
-        LinearLayout form = new LinearLayout(requireContext());
+        Context dialogContext = TrackerControlThemeKt.wrapDynamicColorContext(requireContext());
+        LinearLayout form = new LinearLayout(dialogContext);
         form.setOrientation(LinearLayout.VERTICAL);
         int pad = (int) (20 * getResources().getDisplayMetrics().density);
         form.setPadding(pad, pad / 2, pad, 0);
 
         String account = manager.getLastMullvadAccount();
-        TextView intro = new TextView(requireContext());
+        TextView intro = new TextView(dialogContext);
         intro.setText(TextUtils.isEmpty(account)
                 ? R.string.vpn_mullvad_intro
                 : R.string.vpn_mullvad_account_note);
-        intro.setTextAppearance(requireContext(), R.style.TextSmall);
+        intro.setTextAppearance(R.style.TextSmall);
         form.addView(intro, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        TextView current = new TextView(requireContext());
+        TextView current = new TextView(dialogContext);
         current.setText(TextUtils.isEmpty(account)
                 ? getString(R.string.vpn_account_not_set)
                 : getString(R.string.vpn_account_number, maskAccount(account)));
-        current.setTextAppearance(requireContext(), R.style.TextMedium);
+        current.setTextAppearance(R.style.TextMedium);
         current.setPadding(0, pad / 2, 0, 0);
         form.addView(current, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        Button show = new Button(requireContext());
+        Button show = new Button(dialogContext);
         show.setText(R.string.vpn_account_show);
         show.setVisibility(TextUtils.isEmpty(account) ? View.GONE : View.VISIBLE);
         show.setOnClickListener(v -> {
@@ -822,14 +825,14 @@ public class VpnFragment extends Fragment implements SharedPreferences.OnSharedP
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        Button change = new Button(requireContext());
+        Button change = new Button(dialogContext);
         change.setText(R.string.vpn_account_change);
         change.setVisibility(TextUtils.isEmpty(account) ? View.GONE : View.VISIBLE);
         form.addView(change, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        EditText input = new EditText(requireContext());
+        EditText input = new EditText(dialogContext);
         input.setSingleLine(true);
         input.setInputType(InputType.TYPE_CLASS_NUMBER);
         input.setHint(R.string.vpn_account_hint);
@@ -850,7 +853,7 @@ public class VpnFragment extends Fragment implements SharedPreferences.OnSharedP
                 input.setText("");
         });
 
-        AlertDialog dialog = new MaterialAlertDialogBuilder(requireContext())
+        AlertDialog dialog = new MaterialAlertDialogBuilder(dialogContext)
                 .setTitle(R.string.vpn_settings_title)
                 .setView(form)
                 .setNegativeButton(android.R.string.cancel, null)
@@ -885,32 +888,33 @@ public class VpnFragment extends Fragment implements SharedPreferences.OnSharedP
     private void showIvpnSettingsDialog(@Nullable IvpnProfileGenerator.CaptchaRequiredException captcha,
                                         String captchaId, String captchaImage,
                                         @Nullable VpnCountry pendingCountry) {
-        LinearLayout form = new LinearLayout(requireContext());
+        Context dialogContext = TrackerControlThemeKt.wrapDynamicColorContext(requireContext());
+        LinearLayout form = new LinearLayout(dialogContext);
         form.setOrientation(LinearLayout.VERTICAL);
         int pad = (int) (20 * getResources().getDisplayMetrics().density);
         form.setPadding(pad, pad / 2, pad, 0);
 
         String account = manager.getLastIvpnAccount();
-        TextView intro = new TextView(requireContext());
+        TextView intro = new TextView(dialogContext);
         intro.setText(captcha == null
                 ? R.string.vpn_ivpn_intro
                 : R.string.vpn_ivpn_captcha_intro);
-        intro.setTextAppearance(requireContext(), R.style.TextSmall);
+        intro.setTextAppearance(R.style.TextSmall);
         form.addView(intro, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        TextView current = new TextView(requireContext());
+        TextView current = new TextView(dialogContext);
         current.setText(TextUtils.isEmpty(account)
                 ? getString(R.string.vpn_account_not_set)
                 : getString(R.string.vpn_account_number, maskAccount(account)));
-        current.setTextAppearance(requireContext(), R.style.TextMedium);
+        current.setTextAppearance(R.style.TextMedium);
         current.setPadding(0, pad / 2, 0, 0);
         form.addView(current, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        EditText input = new EditText(requireContext());
+        EditText input = new EditText(dialogContext);
         input.setSingleLine(true);
         input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
         input.setHint(R.string.vpn_ivpn_account_hint);
@@ -921,7 +925,7 @@ public class VpnFragment extends Fragment implements SharedPreferences.OnSharedP
         inputParams.topMargin = pad / 2;
         form.addView(input, inputParams);
 
-        Button change = new Button(requireContext());
+        Button change = new Button(dialogContext);
         change.setText(R.string.vpn_account_change);
         change.setVisibility(TextUtils.isEmpty(account) ? View.GONE : View.VISIBLE);
         change.setOnClickListener(v -> {
@@ -938,7 +942,7 @@ public class VpnFragment extends Fragment implements SharedPreferences.OnSharedP
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        ImageView captchaView = new ImageView(requireContext());
+        ImageView captchaView = new ImageView(dialogContext);
         Bitmap bitmap = decodeCaptcha(captchaImage);
         captchaView.setImageBitmap(bitmap);
         captchaView.setAdjustViewBounds(true);
@@ -949,7 +953,7 @@ public class VpnFragment extends Fragment implements SharedPreferences.OnSharedP
         captchaParams.topMargin = pad / 2;
         form.addView(captchaView, captchaParams);
 
-        EditText captchaInput = new EditText(requireContext());
+        EditText captchaInput = new EditText(dialogContext);
         captchaInput.setSingleLine(true);
         captchaInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
         captchaInput.setHint(R.string.vpn_ivpn_captcha_hint);
@@ -958,7 +962,7 @@ public class VpnFragment extends Fragment implements SharedPreferences.OnSharedP
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        AlertDialog dialog = new MaterialAlertDialogBuilder(requireContext())
+        AlertDialog dialog = new MaterialAlertDialogBuilder(dialogContext)
                 .setTitle(R.string.vpn_ivpn_settings_title)
                 .setView(form)
                 .setNegativeButton(android.R.string.cancel, null)

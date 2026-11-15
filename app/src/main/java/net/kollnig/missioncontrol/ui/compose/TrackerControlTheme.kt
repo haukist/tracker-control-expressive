@@ -44,10 +44,35 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.preference.PreferenceManager
+import com.google.android.material.color.DynamicColors
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import net.kollnig.missioncontrol.R
 
 /** Preference key for opt-in Android 12+ Material You dynamic color. */
 const val PREF_DYNAMIC_COLOR = "dynamic_color"
+
+internal fun isDynamicColorEnabled(prefs: SharedPreferences?): Boolean =
+    prefs?.getBoolean(PREF_DYNAMIC_COLOR, false) ?: false
+
+/**
+ * Wraps [context] with Material You dynamic colors when [PREF_DYNAMIC_COLOR] is
+ * enabled on Android 12+, so View-based dialogs match the Compose theme.
+ *
+ * @return A `ContextThemeWrapper` with the dynamic color overlay applied when
+ * enabled on Android 12+, or the original [context] otherwise (do not cast to `Activity`).
+ */
+fun wrapDynamicColorContext(context: Context): Context {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return context
+    val prefs = runCatching { PreferenceManager.getDefaultSharedPreferences(context) }.getOrNull()
+    if (!isDynamicColorEnabled(prefs)) return context
+    return DynamicColors.wrapContextIfAvailable(context)
+}
+
+/**
+ * Creates a [MaterialAlertDialogBuilder] themed with [wrapDynamicColorContext].
+ */
+fun themedDialogBuilder(context: Context): MaterialAlertDialogBuilder =
+    MaterialAlertDialogBuilder(wrapDynamicColorContext(context))
 
 /**
  * Material 3 Expressive theme for TrackerControl.
@@ -93,13 +118,13 @@ private fun rememberDynamicColorPreference(): Boolean {
         runCatching { PreferenceManager.getDefaultSharedPreferences(context) }.getOrNull()
     }
     var enabled by remember(prefs) {
-        mutableStateOf(prefs?.getBoolean(PREF_DYNAMIC_COLOR, false) ?: false)
+        mutableStateOf(isDynamicColorEnabled(prefs))
     }
     DisposableEffect(prefs) {
         if (prefs == null) return@DisposableEffect onDispose {}
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { sp, key ->
             if (key == PREF_DYNAMIC_COLOR) {
-                enabled = sp.getBoolean(PREF_DYNAMIC_COLOR, false)
+                enabled = isDynamicColorEnabled(sp)
             }
         }
         prefs.registerOnSharedPreferenceChangeListener(listener)

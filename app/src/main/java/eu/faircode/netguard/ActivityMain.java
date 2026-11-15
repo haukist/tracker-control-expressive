@@ -89,6 +89,7 @@ import net.kollnig.missioncontrol.ui.compose.MainScreenCallbacks;
 import net.kollnig.missioncontrol.ui.compose.MainScreenController;
 import net.kollnig.missioncontrol.ui.compose.MainScreenModel;
 import net.kollnig.missioncontrol.ui.compose.MainTabs;
+import net.kollnig.missioncontrol.ui.compose.TrackerControlThemeKt;
 import net.kollnig.missioncontrol.ui.compose.TroubleshootingState;
 import net.kollnig.missioncontrol.vpn.VpnFragment;
 
@@ -656,9 +657,10 @@ public class ActivityMain extends AppCompatActivity implements SharedPreferences
                     Log.i(TAG, "Prepare done");
                     onActivityResult(REQUEST_VPN, RESULT_OK, null);
                 } else {
-                    LayoutInflater inflater = LayoutInflater.from(this);
+                    Context dialogContext = TrackerControlThemeKt.wrapDynamicColorContext(this);
+                    LayoutInflater inflater = LayoutInflater.from(dialogContext);
                     final View view = inflater.inflate(R.layout.vpn, null, false);
-                    dialogVpn = new MaterialAlertDialogBuilder(this)
+                    dialogVpn = new MaterialAlertDialogBuilder(dialogContext)
                             .setView(view)
                             .setCancelable(false)
                             .setPositiveButton(android.R.string.yes, (dialog, which) -> {
