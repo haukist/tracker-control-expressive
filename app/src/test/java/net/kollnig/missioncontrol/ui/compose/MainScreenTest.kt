@@ -72,6 +72,37 @@ class MainScreenTest {
         assertEquals("name", selectedSort)
         assertTrue(selectedSort.isNotEmpty())
     }
+
+    @Test
+    fun appsTabRendersAppRuleRowWithoutCrashWhenPackageIconUnavailable() {
+        composeRule.setContent {
+            TrackerControlTheme(useDynamicColor = false) {
+                MainScreenContent(
+                    model = MainScreenModel(
+                        selectedTab = MainTabs.APPS,
+                        apps = listOf(
+                            AppRuleUi(
+                                uid = 10123,
+                                packageName = "com.nonexistent.tracker.testapp",
+                                name = "Test App",
+                                hasInternet = true,
+                                isSystem = false,
+                                isChanged = false,
+                                isActiveProtection = true,
+                                isInternetBlocked = false,
+                                detailsText = "3 tracking companies",
+                                toggleContentDescription = "Block internet",
+                            ),
+                        ),
+                    ),
+                    callbacks = NoOpMainScreenCallbacks(),
+                )
+            }
+        }
+
+        composeRule.onNodeWithText("Test App").assertIsDisplayed()
+        composeRule.onNodeWithText("3 tracking companies").assertIsDisplayed()
+    }
 }
 
 private open class NoOpMainScreenCallbacks : MainScreenCallbacks {

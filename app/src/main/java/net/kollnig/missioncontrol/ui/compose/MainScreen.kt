@@ -956,9 +956,10 @@ private fun AppIconImage(
             )
         } else {
             Icon(
-                painter = painterResource(android.R.drawable.sym_def_app_icon),
+                painter = painterResource(R.drawable.ic_apps),
                 contentDescription = null,
-                modifier = Modifier.size(36.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(32.dp),
             )
         }
     }
