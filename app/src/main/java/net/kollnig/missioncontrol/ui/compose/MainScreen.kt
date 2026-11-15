@@ -648,7 +648,7 @@ private fun AppsTabContent(
                         enabled = model.isProtectionEnabled,
                         blockingModeLabel = model.blockingModeLabel,
                     )
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
                 }
 
                 if (model.showPushHint) {
