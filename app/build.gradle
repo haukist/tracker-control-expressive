@@ -175,6 +175,44 @@ android {
         }
     }
 
+    def keystoreProperties = new Properties()
+    def keystorePropertiesFile = rootProject.file('keystore.properties')
+    if (keystorePropertiesFile.exists()) {
+        def keystoreText = keystorePropertiesFile.getText('UTF-8').replaceFirst(/^\uFEFF/, '')
+        keystoreProperties.load(new StringReader(keystoreText))
+    }
+
+    def resolveSigningValue = { String envName, String propName ->
+        def envVal = System.getenv(envName)
+        if (envVal != null && !envVal.trim().isEmpty()) {
+            return envVal
+        }
+        return keystoreProperties.getProperty(propName)
+    }
+
+    def releaseStorePassword = resolveSigningValue('RELEASE_STORE_PASSWORD', 'storePassword')
+    def releaseKeyPassword = resolveSigningValue('RELEASE_KEY_PASSWORD', 'keyPassword')
+    if (releaseStorePassword?.trim() && releaseKeyPassword?.trim()) {
+        def releaseStorePath = resolveSigningValue('RELEASE_STORE_FILE', 'storeFile')?.trim()
+        def releaseKeyAlias = resolveSigningValue('RELEASE_KEY_ALIAS', 'keyAlias')?.trim()
+        if (!releaseStorePath || !releaseKeyAlias) {
+            throw new GradleException(
+                'Release signing passwords are set, but storeFile/RELEASE_STORE_FILE or keyAlias/RELEASE_KEY_ALIAS is missing.'
+            )
+        }
+        def releaseStoreFile = rootProject.file(releaseStorePath)
+        if (!releaseStoreFile.exists()) {
+            throw new GradleException("Release keystore file not found: ${releaseStoreFile}")
+        }
+        signingConfigs.release {
+            storeFile = releaseStoreFile
+            storePassword = releaseStorePassword
+            keyAlias = releaseKeyAlias
+            keyPassword = releaseKeyPassword
+        }
+        buildTypes.release.signingConfig = signingConfigs.release
+    }
+
     compileOptions {
         encoding = "UTF-8"
         sourceCompatibility JavaVersion.VERSION_17
