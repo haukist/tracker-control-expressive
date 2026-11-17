@@ -12,11 +12,10 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.hasContentDescription
-import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isToggleable
 import androidx.compose.ui.test.junit4.createComposeRule
-import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
@@ -42,8 +41,7 @@ class TrackersScreenTest {
         var appStateClicked = false
         var librariesClicked = false
         var sectionToggle: Pair<String, Boolean>? = null
-        var companyClicked: String? = null
-        var companyToggle: Pair<String, Boolean>? = null
+        var companyBlockChange: Pair<String, Boolean>? = null
         var showMore: String? = null
 
         override fun onAppStateClick() {
@@ -58,12 +56,8 @@ class TrackersScreenTest {
             sectionToggle = categoryName to checked
         }
 
-        override fun onCompanyClick(blockingKey: String) {
-            companyClicked = blockingKey
-        }
-
-        override fun onCompanyToggle(blockingKey: String, checked: Boolean) {
-            companyToggle = blockingKey to checked
+        override fun onCompanyBlockChanged(blockingKey: String, blocked: Boolean) {
+            companyBlockChange = blockingKey to blocked
         }
 
         override fun onShowMore(categoryName: String) {
@@ -76,8 +70,8 @@ class TrackersScreenTest {
     private fun categoryDescription(displayName: String) =
         context.getString(R.string.toggle_block_category_description, displayName)
 
-    private fun allowLabel(companyName: String) =
-        context.getString(R.string.feed_allow_company_in_app, companyName, "Example App")
+    private fun blockCompanyLabel(companyName: String) =
+        context.getString(R.string.feed_block_company_in_app, companyName, "Example App")
 
     private fun model(rows: List<TrackersRow>) = TrackersScreenModel(
         browserWarning = false,
@@ -110,30 +104,26 @@ class TrackersScreenTest {
         blockingKey: String,
         name: String,
         statusBlocked: Boolean,
-        expanded: Boolean,
-        hosts: String = "",
-        allowChecked: Boolean = !statusBlocked,
-        allowEnabled: Boolean = true,
-        sharedIpNote: String? = null,
-        showDivider: Boolean = false
+        hosts: List<String> = emptyList(),
+        showAllowSwitch: Boolean = true,
+        blockChecked: Boolean = statusBlocked,
+        blockEnabled: Boolean = true,
+        statusNote: String? = null
     ) = TrackersRow.Company(
         key = "company:$categoryName:$blockingKey",
+        categoryName = categoryName,
         blockingKey = blockingKey,
         name = name,
         lastSeen = "3 minutes ago",
         status = if (statusBlocked) "Blocked" else "Allowed by you",
         statusBlocked = statusBlocked,
-        expanded = expanded,
-        hosts = if (expanded) hosts else "",
+        hosts = hosts,
         uncertain = false,
-        showAllowSwitch = expanded,
-        allowSwitchLabel = allowLabel(name),
-        allowSwitchChecked = allowChecked,
-        allowSwitchEnabled = allowEnabled,
-        sharedIpNote = sharedIpNote,
-        showDivider = showDivider,
-        expandedDescription = context.getString(R.string.feed_company_expanded),
-        collapsedDescription = context.getString(R.string.feed_company_collapsed)
+        showAllowSwitch = showAllowSwitch,
+        blockSwitchLabel = blockCompanyLabel(name),
+        blockSwitchChecked = blockChecked,
+        blockSwitchEnabled = blockEnabled,
+        statusNote = statusNote
     )
 
     private fun setContent(rows: List<TrackersRow>, callbacks: TrackersScreenCallbacks) {
@@ -146,7 +136,7 @@ class TrackersScreenTest {
 
     /** Brings a lazily composed row into view before interacting with it. */
     private fun scrollTo(matcher: androidx.compose.ui.test.SemanticsMatcher) {
-        composeRule.onNode(hasScrollAction()).performScrollToNode(matcher)
+        composeRule.onNodeWithTag("trackers-list").performScrollToNode(matcher)
     }
 
     @Test
@@ -169,7 +159,7 @@ class TrackersScreenTest {
         composeRule.onAllNodes(isToggleable()).assertCountEquals(0)
         composeRule.runOnIdle {
             assertNull(callbacks.sectionToggle)
-            assertNull(callbacks.companyToggle)
+            assertNull(callbacks.companyBlockChange)
         }
     }
 
@@ -231,7 +221,7 @@ class TrackersScreenTest {
     }
 
     @Test
-    fun companyAllowSwitchForwardsBlockingKeyWhenAllowingABlockedCompany() {
+    fun tappingBlockedCompanyOpensFloatingDetailAndTogglingBlockOffAllowsIt() {
         val callbacks = RecordingCallbacks()
         setContent(
             listOf(
@@ -241,23 +231,26 @@ class TrackersScreenTest {
                     blockingKey = "example-analytics",
                     name = "Example Analytics",
                     statusBlocked = true,
-                    expanded = true,
-                    hosts = "tracker.example"
+                    hosts = listOf("tracker.example")
                 )
             ),
             callbacks
         )
 
-        val allow = hasContentDescription(allowLabel("Example Analytics"))
-        scrollTo(allow)
-        composeRule.onNode(allow).assertIsOff().performClick()
+        scrollTo(hasText("Example Analytics"))
+        composeRule.onNodeWithText("Example Analytics").performClick()
+
+        composeRule.onNodeWithTag("company-detail-dialog").assertIsDisplayed()
+        composeRule.onNodeWithText("tracker.example").assertIsDisplayed()
+        val blockSwitch = hasContentDescription(blockCompanyLabel("Example Analytics"))
+        composeRule.onNode(blockSwitch).assertIsOn().performClick()
         composeRule.runOnIdle {
-            assertEquals("example-analytics" to true, callbacks.companyToggle)
+            assertEquals("example-analytics" to false, callbacks.companyBlockChange)
         }
     }
 
     @Test
-    fun companyAllowSwitchForwardsBlockingKeyWhenBlockingAnAllowedCompany() {
+    fun tappingAllowedCompanyOpensFloatingDetailAndTogglingBlockOnBlocksIt() {
         val callbacks = RecordingCallbacks()
         setContent(
             listOf(
@@ -267,50 +260,56 @@ class TrackersScreenTest {
                     blockingKey = "example-ads",
                     name = "Example Ads",
                     statusBlocked = false,
-                    expanded = true,
-                    hosts = "ads.example"
+                    hosts = listOf("ads.example")
                 )
             ),
             callbacks
         )
 
-        val allow = hasContentDescription(allowLabel("Example Ads"))
-        scrollTo(allow)
-        composeRule.onNode(allow).assertIsOn().performClick()
+        scrollTo(hasText("Example Ads"))
+        composeRule.onNodeWithText("Example Ads").performClick()
+
+        composeRule.onNodeWithTag("company-detail-dialog").assertIsDisplayed()
+        val blockSwitch = hasContentDescription(blockCompanyLabel("Example Ads"))
+        composeRule.onNode(blockSwitch).assertIsOff().performClick()
         composeRule.runOnIdle {
-            assertEquals("example-ads" to false, callbacks.companyToggle)
+            assertEquals("example-ads" to true, callbacks.companyBlockChange)
         }
     }
 
     @Test
-    fun disabledCompanyAllowSwitchDoesNotForwardToggle() {
+    fun unblockedCategoryCompanyDetailOffersCategoryBlockButtonInsteadOfDeadSwitch() {
         val callbacks = RecordingCallbacks()
         setContent(
             listOf(
-                // Category unblocked, so the per-company switch is read-only.
-                section("Analytics", checked = false, enabled = true),
+                section("Essential", checked = false, enabled = true),
                 company(
-                    categoryName = "Analytics",
+                    categoryName = "Essential",
                     blockingKey = "frozen-co",
                     name = "Frozen Co",
                     statusBlocked = false,
-                    expanded = true,
-                    hosts = "frozen.example",
-                    allowEnabled = false,
-                    sharedIpNote = context.getString(R.string.category_unblocked_warning)
+                    hosts = listOf("frozen.example"),
+                    blockEnabled = false,
+                    statusNote = context.getString(R.string.category_unblocked_warning)
                 )
             ),
             callbacks
         )
 
-        val allow = hasContentDescription(allowLabel("Frozen Co"))
-        scrollTo(allow)
-        composeRule.onNode(allow).assertIsNotEnabled().performClick()
-        composeRule.runOnIdle { assertNull(callbacks.companyToggle) }
+        scrollTo(hasText("Frozen Co"))
+        composeRule.onNodeWithText("Frozen Co").performClick()
+
+        composeRule.onNodeWithTag("company-detail-dialog").assertIsDisplayed()
+        composeRule.onAllNodes(hasContentDescription(blockCompanyLabel("Frozen Co")))
+            .assertCountEquals(0)
+        composeRule.onNodeWithText(context.getString(R.string.feed_block_category_action, "Essential"))
+            .assertIsDisplayed()
+            .performClick()
+        composeRule.runOnIdle { assertEquals("Essential" to true, callbacks.sectionToggle) }
     }
 
     @Test
-    fun internetBlockedCompanySwitchStaysInertAcrossMixedCategories() {
+    fun internetBlockedCategoryAndCompanySwitchesStayInert() {
         val callbacks = RecordingCallbacks()
         setContent(
             listOf(
@@ -320,28 +319,30 @@ class TrackersScreenTest {
                     blockingKey = "no-internet-co",
                     name = "No Internet Co",
                     statusBlocked = true,
-                    expanded = true,
-                    hosts = "offline.example",
-                    allowEnabled = false
+                    hosts = listOf("offline.example"),
+                    blockEnabled = false
                 )
             ),
             callbacks
         )
 
-        val allow = hasContentDescription(allowLabel("No Internet Co"))
-        scrollTo(allow)
-        composeRule.onNode(allow).assertIsNotEnabled().performClick()
-        val category = hasContentDescription(categoryDescription("Analytics"))
-        scrollTo(category)
-        composeRule.onNode(category).assertIsNotEnabled().performClick()
+        val sectionSwitch = hasContentDescription(categoryDescription("Analytics"))
+        scrollTo(sectionSwitch)
+        composeRule.onNode(sectionSwitch).assertIsNotEnabled().performClick()
+
+        scrollTo(hasText("No Internet Co"))
+        composeRule.onNodeWithText("No Internet Co").performClick()
+
+        val blockSwitch = hasContentDescription(blockCompanyLabel("No Internet Co"))
+        composeRule.onNode(blockSwitch).assertIsNotEnabled().performClick()
         composeRule.runOnIdle {
-            assertNull(callbacks.companyToggle)
             assertNull(callbacks.sectionToggle)
+            assertNull(callbacks.companyBlockChange)
         }
     }
 
     @Test
-    fun expandedCompanyShowsHostsAndAllowSwitchWhileCollapsedCompanyHidesThem() {
+    fun filterChipsFilterDisplayedCompanies() {
         val callbacks = RecordingCallbacks()
         setContent(
             listOf(
@@ -351,50 +352,24 @@ class TrackersScreenTest {
                     blockingKey = "example-analytics",
                     name = "Example Analytics",
                     statusBlocked = true,
-                    expanded = true,
-                    hosts = "tracker.example",
-                    showDivider = true
+                    hosts = listOf("tracker.example")
                 ),
                 company(
                     categoryName = "Analytics",
                     blockingKey = "example-ads",
                     name = "Example Ads",
                     statusBlocked = false,
-                    expanded = false,
-                    hosts = "ads.example"
+                    hosts = listOf("ads.example")
                 )
             ),
             callbacks
         )
 
-        scrollTo(hasText("tracker.example"))
-        composeRule.onNodeWithText("tracker.example").assertIsDisplayed()
-        composeRule.onNodeWithContentDescription(allowLabel("Example Analytics")).assertExists()
-        composeRule.onNodeWithText("ads.example").assertDoesNotExist()
-        composeRule.onAllNodes(hasContentDescription(allowLabel("Example Ads")))
-            .assertCountEquals(0)
-    }
+        scrollTo(hasText(context.getString(R.string.feed_filter_blocked, 1)))
+        composeRule.onNodeWithText(context.getString(R.string.feed_filter_blocked, 1)).performClick()
 
-    @Test
-    fun collapsedCompanyRowForwardsExpansionRequestWithItsBlockingKey() {
-        val callbacks = RecordingCallbacks()
-        setContent(
-            listOf(
-                section("Analytics", checked = true, enabled = true),
-                company(
-                    categoryName = "Analytics",
-                    blockingKey = "example-ads",
-                    name = "Example Ads",
-                    statusBlocked = false,
-                    expanded = false
-                )
-            ),
-            callbacks
-        )
-
-        scrollTo(hasText("Example Ads"))
-        composeRule.onNodeWithText("Example Ads").performClick()
-        composeRule.runOnIdle { assertEquals("example-ads", callbacks.companyClicked) }
+        composeRule.onNodeWithText("Example Analytics").assertExists()
+        composeRule.onNodeWithText("Example Ads").assertDoesNotExist()
     }
 
     @Test
@@ -407,9 +382,7 @@ class TrackersScreenTest {
                     categoryName = "Analytics",
                     blockingKey = "example-analytics",
                     name = "Example Analytics",
-                    statusBlocked = true,
-                    expanded = false,
-                    showDivider = true
+                    statusBlocked = true
                 ),
                 TrackersRow.ShowMore(
                     key = "more:Analytics",

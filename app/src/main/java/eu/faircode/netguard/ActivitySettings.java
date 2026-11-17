@@ -113,25 +113,42 @@ import okhttp3.HttpUrl;
 
 import javax.xml.parsers.ParserConfigurationException;
 import javax.xml.parsers.SAXParserFactory;
+import androidx.activity.OnBackPressedCallback;
+import androidx.compose.ui.platform.ComposeView;
+import net.kollnig.missioncontrol.diagnostics.BatteryExperimentHooks;
+import net.kollnig.missioncontrol.tailscale.TailscaleManager;
+import net.kollnig.missioncontrol.tailscale.TailscaleSettings;
+import net.kollnig.missioncontrol.tailscale.TailscaleSnapshot;
+import net.kollnig.missioncontrol.ui.compose.SettingsInputKind;
+import net.kollnig.missioncontrol.ui.compose.SettingsItem;
+import net.kollnig.missioncontrol.ui.compose.SettingsPage;
+import net.kollnig.missioncontrol.ui.compose.SettingsScreen;
+import net.kollnig.missioncontrol.ui.compose.SettingsScreenCallbacks;
+import net.kollnig.missioncontrol.ui.compose.SettingsScreenController;
+import net.kollnig.missioncontrol.ui.compose.SettingsScreenModel;
+import net.kollnig.missioncontrol.ui.compose.SettingsSection;
+import net.kollnig.missioncontrol.ui.compose.TrackerControlThemeKt;
+import kotlin.Pair;
 
-public class ActivitySettings extends AppCompatActivity implements SharedPreferences.OnSharedPreferenceChangeListener, PreferenceFragmentCompat.OnPreferenceStartScreenCallback {
+public class ActivitySettings extends AppCompatActivity implements SharedPreferences.OnSharedPreferenceChangeListener {
     private static final String TAG = "TrackerControl.Settings";
 
     private boolean running = false;
-    private net.kollnig.missioncontrol.tailscale.TailscaleSettings tailscaleSettings;
-    private final Runnable tailscaleStatusListener = () -> {
-        if (tailscaleSettings != null && !isFinishing()) tailscaleSettings.update();
-    };
+    private SettingsScreenController screenController;
+    private SettingsPage currentPage = SettingsPage.ROOT;
+    private TailscaleSettings tailscaleSettings;
+
     private final Handler wgStatusHandler = new Handler(Looper.getMainLooper());
-    private final Runnable wgStatusListener = new Runnable() {
-        @Override
-        public void run() {
-            // Posted from WgEgress on a non-UI thread; bounce to UI.
-            wgStatusHandler.post(() -> {
-                if (running) updateWireGuardStatus();
-            });
+    private final Runnable tailscaleStatusListener = () -> wgStatusHandler.post(() -> {
+        if (!running) return;
+        if (tailscaleSettings != null) {
+            tailscaleSettings.onStatusChanged();
         }
-    };
+        renderSettings();
+    });
+    private final Runnable wgStatusListener = () -> wgStatusHandler.post(() -> {
+        if (running) renderSettings();
+    });
 
     private static final int REQUEST_EXPORT = 1;
     private static final int REQUEST_IMPORT = 2;
@@ -140,521 +157,119 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
 
     private boolean requestedLocalNetwork = false;
 
-    private static final Intent INTENT_VPN_SETTINGS = new Intent("android.net.vpn.SETTINGS");
+    private static final String KEY_CURRENT_PAGE = "settings_current_page";
 
+    @Override
     protected void onCreate(Bundle savedInstanceState) {
         setTheme(R.style.AppThemeRed_NoActionBar);
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_settings);
 
-        com.google.android.material.appbar.MaterialToolbar toolbar = findViewById(R.id.toolbar);
-        setSupportActionBar(toolbar);
-        getSupportActionBar().setDisplayHomeAsUpEnabled(true);
-
-        // Pad the AppBarLayout so its colored background extends behind the status bar
-        com.google.android.material.appbar.AppBarLayout appBar = findViewById(R.id.appbar);
-        final int appBarInitialTop = appBar.getPaddingTop();
-        ViewCompat.setOnApplyWindowInsetsListener(appBar, (v, insets) -> {
-            Insets sysBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            v.setPadding(v.getPaddingLeft(), appBarInitialTop + sysBars.top,
-                    v.getPaddingRight(), v.getPaddingBottom());
-            return insets;
-        });
-
-        // Pad the settings container by the bottom system bar inset so the last
-        // preference is reachable above the navigation bar.
-        View settingsContainer = findViewById(R.id.settings_container);
-        final int containerInitialBottom = settingsContainer.getPaddingBottom();
-        ViewCompat.setOnApplyWindowInsetsListener(settingsContainer, (v, insets) -> {
-            Insets sysBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            v.setPadding(v.getPaddingLeft(), v.getPaddingTop(),
-                    v.getPaddingRight(), containerInitialBottom + sysBars.bottom);
-            return insets;
-        });
-
-        getSupportFragmentManager().registerFragmentLifecycleCallbacks(new FragmentManager.FragmentLifecycleCallbacks() {
-            @Override
-            public void onFragmentResumed(@NonNull FragmentManager fm, @NonNull Fragment f) {
-                super.onFragmentResumed(fm, f);
-                if (f instanceof FragmentSettings) {
-                    configurePreferences();
+        if (savedInstanceState != null) {
+            String savedPage = savedInstanceState.getString(KEY_CURRENT_PAGE);
+            if (savedPage != null) {
+                try {
+                    currentPage = SettingsPage.valueOf(savedPage);
+                } catch (IllegalArgumentException ignored) {
+                    currentPage = SettingsPage.ROOT;
                 }
             }
-        }, false);
-
-        if (savedInstanceState == null) {
-            getSupportFragmentManager().beginTransaction()
-                    .replace(R.id.settings_container, new FragmentSettings())
-                    .commit();
         }
+
+        ComposeView composeView = new ComposeView(this);
+        setContentView(composeView);
         running = true;
-    }
 
-    private PreferenceScreen getPreferenceScreen() {
-        return ((PreferenceFragmentCompat) getSupportFragmentManager().findFragmentById(R.id.settings_container)).getPreferenceScreen();
-    }
-
-    @Override
-    public boolean onPreferenceStartScreen(PreferenceFragmentCompat caller, PreferenceScreen pref) {
-        FragmentSettings fragment = new FragmentSettings();
-        Bundle args = new Bundle();
-        args.putString(PreferenceFragmentCompat.ARG_PREFERENCE_ROOT, pref.getKey());
-        fragment.setArguments(args);
-
-        getSupportFragmentManager().beginTransaction()
-                .replace(R.id.settings_container, fragment)
-                .addToBackStack(pref.getKey())
-                .commit();
-        return true;
-    }
-
-    @Override
-    protected void onPostCreate(Bundle savedInstanceState) {
-        super.onPostCreate(savedInstanceState);
-        configurePreferences();
-    }
-
-    // This preference action launches a bounded database task; lifecycle-aware
-    // executor migration is deliberately outside this focused lint change.
-    @SuppressLint("StaticFieldLeak")
-    private void configurePreferences() {
-        final PreferenceScreen screen = getPreferenceScreen();
-        final SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        tailscaleSettings = new TailscaleSettings(this, prefs);
         BlockingMode.enforcePlayStoreMode(this);
-        if (tailscaleSettings == null)
-            tailscaleSettings = new net.kollnig.missioncontrol.tailscale.TailscaleSettings(this, prefs);
-        tailscaleSettings.configure(screen);
-
-        // Find category groups (may be null depending on which sub-screen is showing)
-        PreferenceGroup cat_options = (PreferenceGroup) screen.findPreference("category_options");
-
-        PreferenceGroup screenAdvanced = (PreferenceGroup) screen.findPreference("screen_advanced_options");
-        PreferenceGroup cat_advanced = screenAdvanced != null
-                ? (PreferenceGroup) screenAdvanced.findPreference("category_advanced_options") : null;
-        if (cat_advanced == null)
-            cat_advanced = (PreferenceGroup) screen.findPreference("category_advanced_options");
-
-        PreferenceGroup cat_backup = (PreferenceGroup) screen.findPreference("category_backup");
-
-        // Handle pause
-        Preference pref_pause = screen.findPreference("pause");
-        if (pref_pause != null)
-            pref_pause.setTitle(getString(R.string.setting_pause, prefs.getString("pause", "10")));
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && cat_advanced != null) {
-            TwoStatePreference pref_handover = (TwoStatePreference) screen.findPreference("handover");
-            if (pref_handover != null)
-                cat_advanced.removePreference(pref_handover);
-        }
-
-        Preference pref_reset_usage = screen.findPreference("reset_usage");
-        if (pref_reset_usage != null) {
-            pref_reset_usage.setOnPreferenceClickListener(new Preference.OnPreferenceClickListener() {
-                @Override
-                public boolean onPreferenceClick(Preference preference) {
-                    Util.areYouSure(ActivitySettings.this, R.string.setting_reset_usage, new Util.DoubtListener() {
-                        @Override
-                        public void onSure() {
-                            new AsyncTask<Object, Object, Throwable>() {
-                                @Override
-                                protected Throwable doInBackground(Object... objects) {
-                                    try {
-                                        DatabaseHelper.getInstance(ActivitySettings.this).resetUsage(-1);
-                                        return null;
-                                    } catch (Throwable ex) {
-                                        return ex;
-                                    }
-                                }
-
-                                @Override
-                                protected void onPostExecute(Throwable ex) {
-                                    if (!running)
-                                        return;
-                                    if (ex == null)
-                                        Toast.makeText(ActivitySettings.this, R.string.msg_completed, Toast.LENGTH_LONG)
-                                                .show();
-                                    else
-                                        Toast.makeText(ActivitySettings.this, ex.toString(), Toast.LENGTH_LONG).show();
-                                }
-                            }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
-                        }
-                    });
-                    return false;
-                }
-            });
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            TwoStatePreference pref_reload_onconnectivity = (TwoStatePreference) screen
-                    .findPreference("reload_onconnectivity");
-            if (pref_reload_onconnectivity != null) {
-                pref_reload_onconnectivity.setChecked(true);
-                pref_reload_onconnectivity.setEnabled(false);
-            }
-        }
-
-        // Handle port forwarding
-        Preference pref_forwarding = screen.findPreference("forwarding");
-        if (pref_forwarding != null) {
-            pref_forwarding.setOnPreferenceClickListener(new Preference.OnPreferenceClickListener() {
-                @Override
-                public boolean onPreferenceClick(Preference preference) {
-                    startActivity(new Intent(ActivitySettings.this, ActivityForwarding.class));
-                    return true;
-                }
-            });
-        }
-
-        // VPN parameters
-        Preference pref_vpn4 = screen.findPreference("vpn4");
-        if (pref_vpn4 != null)
-            pref_vpn4.setTitle(getString(R.string.setting_vpn4, prefs.getString("vpn4", "10.1.10.1")));
-        Preference pref_vpn6 = screen.findPreference("vpn6");
-        if (pref_vpn6 != null)
-            pref_vpn6.setTitle(getString(R.string.setting_vpn6, prefs.getString("vpn6", "fd00:1:fd00:1:fd00:1:fd00:1")));
-        EditTextPreference pref_dns1 = (EditTextPreference) screen.findPreference("dns");
-        EditTextPreference pref_dns2 = (EditTextPreference) screen.findPreference("dns2");
-        EditTextPreference pref_validate = (EditTextPreference) screen.findPreference("validate");
-        EditTextPreference pref_ttl = (EditTextPreference) screen.findPreference("ttl");
-        if (pref_dns1 != null)
-            pref_dns1.setTitle(getString(R.string.setting_dns, prefs.getString("dns", "-")));
-        if (pref_dns2 != null)
-            pref_dns2.setTitle(getString(R.string.setting_dns, prefs.getString("dns2", "-")));
-        if (pref_validate != null)
-            pref_validate.setTitle(getString(R.string.setting_validate, prefs.getString("validate", "www.f-droid.org")));
-        if (pref_ttl != null)
-            pref_ttl.setTitle(getString(R.string.setting_ttl, prefs.getString("ttl", "259200")));
-
-        // SOCKS5 parameters
-        Preference pref;
-        pref = screen.findPreference("socks5_addr");
-        if (pref != null)
-            pref.setTitle(getString(R.string.setting_socks5_addr, prefs.getString("socks5_addr", "-")));
-        pref = screen.findPreference("socks5_port");
-        if (pref != null)
-            pref.setTitle(getString(R.string.setting_socks5_port, prefs.getString("socks5_port", "-")));
-        pref = screen.findPreference("socks5_username");
-        if (pref != null)
-            pref.setTitle(getString(R.string.setting_socks5_username, prefs.getString("socks5_username", "-")));
-        pref = screen.findPreference("socks5_password");
-        if (pref != null)
-            pref.setTitle(getString(R.string.setting_socks5_password,
-                    TextUtils.isEmpty(prefs.getString("socks5_username", "")) ? "-" : "*****"));
-
-        // PCAP parameters
-        pref = screen.findPreference("pcap_record_size");
-        if (pref != null)
-            pref.setTitle(getString(R.string.setting_pcap_record_size, prefs.getString("pcap_record_size", "64")));
-        pref = screen.findPreference("pcap_file_size");
-        if (pref != null)
-            pref.setTitle(getString(R.string.setting_pcap_file_size, prefs.getString("pcap_file_size", "2")));
-
-        // DoH endpoint
-        EditTextPreference pref_doh_endpoint = (EditTextPreference) screen.findPreference("doh_endpoint");
-        if (pref_doh_endpoint != null) {
-            configureDohEndpointPreference(pref_doh_endpoint);
-            pref_doh_endpoint.setSummary(prefs.getString("doh_endpoint", BuildConfig.DEFAULT_DOH_ENDPOINT));
-        }
-
-        // WireGuard status
         new WgProfileManager(this).migrateIfNeeded();
-        configureWireGuardProfiles(screen, prefs);
-        CharSequence wgStatus = getWireGuardStatusSummary(prefs);
-        pref = screen.findPreference("screen_wireguard");
-        if (pref != null)
-            pref.setSummary(wgStatus);
-        pref = screen.findPreference("wg_status");
-        if (pref != null)
-            pref.setSummary(wgStatus);
 
-        // Show resolved
-        Preference pref_show_resolved = screen.findPreference("show_resolved");
-        if (pref_show_resolved != null) {
-            pref_show_resolved.setOnPreferenceClickListener(new Preference.OnPreferenceClickListener() {
-                @Override
-                public boolean onPreferenceClick(Preference preference) {
-                    startActivity(new Intent(ActivitySettings.this, ActivityDns.class));
-                    return true;
+        screenController = SettingsScreen.install(composeView, new SettingsScreenCallbacks() {
+            @Override
+            public void onNavigateUp() {
+                if (currentPage != SettingsPage.ROOT) {
+                    currentPage = SettingsPage.ROOT;
+                    renderSettings();
+                } else {
+                    NavUtils.navigateUpFromSameTask(ActivitySettings.this);
                 }
-            });
-        }
-
-        // Handle export
-        // Do not gate on resolveActivity(): on some ROMs (e.g. without the
-        // system DocumentsUI) it wrongly returns null and silently greys out
-        // Backup, even though the picker would launch. Keep it enabled and fail
-        // gracefully with a message instead (issue #308).
-        Preference pref_export = screen.findPreference("export");
-        if (pref_export != null) {
-            pref_export.setOnPreferenceClickListener(new Preference.OnPreferenceClickListener() {
-                @Override
-                public boolean onPreferenceClick(Preference preference) {
-                    try {
-                        startActivityForResult(getIntentCreateExport(), ActivitySettings.REQUEST_EXPORT);
-                    } catch (ActivityNotFoundException ex) {
-                        Toast.makeText(ActivitySettings.this, R.string.msg_no_file_manager, Toast.LENGTH_LONG).show();
-                    }
-                    return true;
-                }
-            });
-        }
-
-        // Handle import
-        Preference pref_import = screen.findPreference("import");
-        if (pref_import != null) {
-            pref_import.setOnPreferenceClickListener(new Preference.OnPreferenceClickListener() {
-                @Override
-                public boolean onPreferenceClick(Preference preference) {
-                    try {
-                        startActivityForResult(getIntentOpenExport(), ActivitySettings.REQUEST_IMPORT);
-                    } catch (ActivityNotFoundException ex) {
-                        Toast.makeText(ActivitySettings.this, R.string.msg_no_file_manager, Toast.LENGTH_LONG).show();
-                    }
-                    return true;
-                }
-            });
-        }
-
-        // Custom lists cannot affect the Play build's Minimal-only policy.
-        if (BlockingMode.isPlayStoreBuild() && cat_advanced != null) {
-            for (String key : new String[]{"manage_blocklists", "hosts_download", "hosts_auto_update"}) {
-                Preference preference = cat_advanced.findPreference(key);
-                if (preference != null)
-                    cat_advanced.removePreference(preference);
             }
-        }
 
-        // Hosts file settings
-        if (cat_advanced != null) {
-            Preference pref_use_hosts = screen.findPreference("use_hosts");
-            if (pref_use_hosts != null)
-                cat_advanced.removePreference(pref_use_hosts);
-        }
-        EditTextPreference pref_rcode = (EditTextPreference) screen.findPreference("rcode");
-        final Preference pref_hosts_download = screen.findPreference("hosts_download");
-
-        Preference pref_manage_blocklists = screen.findPreference("manage_blocklists");
-        if (pref_manage_blocklists != null) {
-            pref_manage_blocklists.setOnPreferenceClickListener(preference -> {
-                startActivity(new Intent(ActivitySettings.this, net.kollnig.missioncontrol.ActivityBlocklists.class));
-                return true;
-            });
-        }
-
-        Preference pref_exclude_all = screen.findPreference("exclude_all_tracking");
-        if (pref_exclude_all != null) {
-            pref_exclude_all.setOnPreferenceClickListener(preference -> {
-                Util.areYouSure(ActivitySettings.this, R.string.summary_exclude_all_tracking, new Util.DoubtListener() {
-                    @Override
-                    public void onSure() {
-                        setTrackerProtectionForAll(false);
-                    }
-                });
-                return true;
-            });
-        }
-
-        Preference pref_include_all = screen.findPreference("include_all_tracking");
-        if (pref_include_all != null) {
-            pref_include_all.setOnPreferenceClickListener(preference -> {
-                Util.areYouSure(ActivitySettings.this, R.string.summary_include_all_tracking, new Util.DoubtListener() {
-                    @Override
-                    public void onSure() {
-                        setTrackerProtectionForAll(true);
-                    }
-                });
-                return true;
-            });
-        }
-
-        if (pref_rcode != null && cat_advanced != null) {
-            pref_rcode.setTitle(getString(R.string.setting_rcode, prefs.getString("rcode", "3")));
-            cat_advanced.removePreference(pref_rcode);
-        }
-
-        if (cat_options != null) {
-            if (Util.isFDroidInstall() || Util.isPlayStoreInstall(this)) {
-                Preference pref_update = screen.findPreference("update_check");
-                if (pref_update != null)
-                    cat_options.removePreference(pref_update);
+            @Override
+            public void onOpenPage(@NonNull SettingsPage page) {
+                currentPage = page;
+                renderSettings();
             }
-        }
 
-        // Blocking mode preference setup
-        Preference pref_blocking_mode = screen.findPreference("blocking_mode");
-        if (pref_blocking_mode != null) {
-            String currentMode = BlockingMode.getMode(this);
-            if (Util.isPlayStoreInstall(this) && pref_blocking_mode instanceof ListPreference) {
-                ListPreference listPreference = (ListPreference) pref_blocking_mode;
-                listPreference.setEntries(new CharSequence[]{getString(R.string.blocking_mode_minimal)});
-                listPreference.setEntryValues(new CharSequence[]{BlockingMode.MODE_MINIMAL});
-                listPreference.setValue(BlockingMode.MODE_MINIMAL);
-                listPreference.setEnabled(false);
+            @Override
+            public void onToggleSwitch(@NonNull String key, boolean checked) {
+                handleSwitchToggle(key, checked, prefs);
             }
-            updateBlockingModeSummary(pref_blocking_mode, currentMode);
-        }
 
-        Preference pref_log_logcat = screen.findPreference("log_logcat");
-        if (pref_log_logcat != null)
-            updateResearchModeSummary(pref_log_logcat);
+            @Override
+            public void onSelectListOption(@NonNull String key, @NonNull String value) {
+                handleListSelection(key, value, prefs);
+            }
 
-        if (Util.isPlayStoreInstall(this) && cat_advanced != null) {
-            Log.i(TAG, "Play store install");
-            if (pref_forwarding != null)
-                cat_advanced.removePreference(pref_forwarding);
+            @Override
+            public void onSubmitTextInput(@NonNull String key, @NonNull String value) {
+                handleTextInput(key, value, prefs);
+            }
 
-            Preference p;
-            p = cat_advanced.findPreference("domain_based_blocking");
-            if (p != null) cat_advanced.removePreference(p);
-            p = cat_advanced.findPreference("log_app");
-            if (p != null) cat_advanced.removePreference(p);
-        }
+            @Override
+            public void onActionClick(@NonNull String key) {
+                handleActionClick(key);
+            }
+        });
 
-        String last_download = prefs.getString("hosts_last_download", null);
-        if (pref_hosts_download != null) {
-            if (last_download != null)
-                pref_hosts_download.setSummary(getString(R.string.msg_update_last, last_download));
-
-            pref_hosts_download.setOnPreferenceClickListener(preference -> {
-                Constraints constraints = new Constraints.Builder()
-                        .setRequiredNetworkType(NetworkType.CONNECTED)
-                        .build();
-
-                OneTimeWorkRequest downloadWork = new OneTimeWorkRequest.Builder(HostsDownloadWorker.class)
-                        .setConstraints(constraints)
-                        .addTag("ManualHostsDownload")
-                        .build();
-                WorkManager.getInstance(ActivitySettings.this).enqueue(downloadWork);
-                return true;
-            });
-
-            WorkManager.getInstance(this).getWorkInfosByTagLiveData("ManualHostsDownload").observe(this, workInfos -> {
-                if (workInfos != null && !workInfos.isEmpty()) {
-                    androidx.work.WorkInfo workInfo = workInfos.get(0);
-                    if (workInfo.getState() == androidx.work.WorkInfo.State.SUCCEEDED) {
-                        String last = SimpleDateFormat.getDateTimeInstance().format(new Date().getTime());
-                        pref_hosts_download.setSummary(getString(R.string.msg_update_last, last));
-                    }
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                if (currentPage != SettingsPage.ROOT) {
+                    currentPage = SettingsPage.ROOT;
+                    renderSettings();
+                    return;
                 }
-            });
-        }
+                setEnabled(false);
+                getOnBackPressedDispatcher().onBackPressed();
+            }
+        });
 
-        eu.faircode.netguard.SwitchPreference pref_hosts_auto_update = (eu.faircode.netguard.SwitchPreference) screen
-                .findPreference("hosts_auto_update");
-        if (pref_hosts_auto_update != null) {
-            pref_hosts_auto_update.setOnPreferenceChangeListener(new Preference.OnPreferenceChangeListener() {
-                @Override
-                public boolean onPreferenceChange(Preference preference, Object newValue) {
-                    HostsDownloadWorker.scheduleAutoUpdate(ActivitySettings.this, (Boolean) newValue);
-                    return true;
-                }
-            });
-        }
+        WorkManager.getInstance(this).getWorkInfosByTagLiveData("ManualHostsDownload").observe(this, workInfos -> {
+            if (running) renderSettings();
+        });
 
-        // Development
-        if (!Util.isDebuggable(this)) {
-            Preference screenDevelopment = screen.findPreference("screen_development");
-            if (screenDevelopment != null)
-                screen.removePreference(screenDevelopment);
-        } else {
-            Preference rotateKeys = screen.findPreference("vpn_key_rotate_now");
-            if (rotateKeys != null)
-                rotateKeys.setOnPreferenceClickListener(preference -> {
-                    Toast.makeText(ActivitySettings.this,
-                            R.string.msg_vpn_key_rotation_started,
-                            Toast.LENGTH_LONG).show();
-                    net.kollnig.missioncontrol.wg.VpnKeyRotationManager.rotateAllForDebug(
-                            ActivitySettings.this,
-                            summary -> wgStatusHandler.post(() ->
-                                    Toast.makeText(ActivitySettings.this, summary,
-                                            Toast.LENGTH_LONG).show()));
-                    return true;
-                });
-        }
+        renderSettings();
     }
 
-    private void configureWireGuardProfiles(PreferenceScreen screen, SharedPreferences prefs) {
-        WgProfileManager manager = new WgProfileManager(this);
-        manager.migrateIfNeeded();
-        java.util.List<WgProfileManager.Profile> profiles = manager.getProfiles();
-        WgProfileManager.Profile activeProfile = manager.getActiveProfile();
-        ListPreference profilePref = (ListPreference) screen.findPreference(WgProfileManager.PREF_WG_PROFILE);
-        Preference managePref = screen.findPreference("wg_profile_manage");
-
-        if (profilePref != null) {
-            if (profiles.isEmpty()) {
-                profilePref.setEnabled(false);
-                profilePref.setEntries(new CharSequence[0]);
-                profilePref.setEntryValues(new CharSequence[0]);
-                profilePref.setSummary(R.string.summary_wg_profile_none);
-            } else {
-                CharSequence[] entries = new CharSequence[profiles.size()];
-                CharSequence[] values = new CharSequence[profiles.size()];
-                for (int i = 0; i < profiles.size(); i++) {
-                    WgProfileManager.Profile profile = profiles.get(i);
-                    entries[i] = profile.name;
-                    values[i] = profile.id;
-                }
-                profilePref.setEnabled(true);
-                profilePref.setEntries(entries);
-                profilePref.setEntryValues(values);
-                profilePref.setValue(manager.getActiveProfileId());
-                profilePref.setSummary(activeProfile == null
-                        ? getString(R.string.summary_wg_profile)
-                        : activeProfile.name);
-                profilePref.setOnPreferenceChangeListener((preference, newValue) -> {
-                    applyWireGuardProfile((String) newValue);
-                    return false;
-                });
-            }
-        }
-
-        if (managePref != null) {
-            managePref.setOnPreferenceClickListener(preference -> {
-                startActivity(new Intent(ActivitySettings.this,
-                        net.kollnig.missioncontrol.ActivityWireGuardProfiles.class));
-                return true;
-            });
-        }
-    }
-
-    private void applyWireGuardProfile(String id) {
-        WgProfileManager manager = new WgProfileManager(this);
-        manager.setActiveProfile(id);
-        configureWireGuardProfiles(getPreferenceScreen(), PreferenceManager.getDefaultSharedPreferences(this));
-        updateWireGuardStatus();
-        ServiceSinkhole.reload("changed " + WgProfileManager.PREF_WG_PROFILE, this, false);
+    @Override
+    protected void onSaveInstanceState(@NonNull Bundle outState) {
+        super.onSaveInstanceState(outState);
+        outState.putString(KEY_CURRENT_PAGE, currentPage.name());
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-
         checkPermissions(null);
-
-        // Listen for preference changes
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
         prefs.registerOnSharedPreferenceChangeListener(this);
-
         net.kollnig.missioncontrol.wg.WgEgress.INSTANCE.addStateListener(wgStatusListener);
-        net.kollnig.missioncontrol.tailscale.TailscaleManager.addListener(tailscaleStatusListener);
-        if (tailscaleSettings != null) tailscaleSettings.update();
-        PreferenceScreen screen = getPreferenceScreen();
-        if (screen != null)
-            configureWireGuardProfiles(screen, prefs);
-        updateWireGuardStatus();
+        TailscaleManager.addListener(tailscaleStatusListener);
+        new WgProfileManager(this).migrateIfNeeded();
+        renderSettings();
     }
 
     @Override
     protected void onPause() {
         super.onPause();
-        if (tailscaleSettings != null) tailscaleSettings.cancelPendingLogin();
-
+        if (tailscaleSettings != null) {
+            tailscaleSettings.cancelPendingLogin();
+        }
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
         prefs.unregisterOnSharedPreferenceChangeListener(this);
-
         net.kollnig.missioncontrol.wg.WgEgress.INSTANCE.removeStateListener(wgStatusListener);
-        net.kollnig.missioncontrol.tailscale.TailscaleManager.removeListener(tailscaleStatusListener);
+        TailscaleManager.removeListener(tailscaleStatusListener);
     }
 
     @Override
@@ -664,141 +279,195 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
         super.onDestroy();
     }
 
-    @Override
-    public boolean onOptionsItemSelected(MenuItem item) {
-        switch (item.getItemId()) {
-            case android.R.id.home:
-                Log.i(TAG, "Up");
-                if (getSupportFragmentManager().getBackStackEntryCount() > 0)
-                    getSupportFragmentManager().popBackStack();
-                else
-                    NavUtils.navigateUpFromSameTask(this);
-                return true;
-            default:
-                return super.onOptionsItemSelected(item);
+    private void handleSwitchToggle(String key, boolean checked, SharedPreferences prefs) {
+        if (checked && ("ts_enabled".equals(key) || "wg_enabled".equals(key) || "socks5_enabled".equals(key))) {
+            boolean proceed = tailscaleSettings.canOrConfirmEnable(key, () -> {
+                prefs.edit().putBoolean(key, true).apply();
+                renderSettings();
+            });
+            if (!proceed) {
+                renderSettings();
+                return;
+            }
+        }
+        if ("ts_enabled".equals(key) && !checked) {
+            tailscaleSettings.cancelPendingLogin();
+        }
+        if ("hosts_auto_update".equals(key)) {
+            HostsDownloadWorker.scheduleAutoUpdate(this, checked);
+        }
+        prefs.edit().putBoolean(key, checked).apply();
+        renderSettings();
+    }
+
+    private void handleListSelection(String key, String value, SharedPreferences prefs) {
+        if (WgProfileManager.PREF_WG_PROFILE.equals(key)) {
+            WgProfileManager manager = new WgProfileManager(this);
+            manager.setActiveProfile(value);
+            ServiceSinkhole.reload("changed " + WgProfileManager.PREF_WG_PROFILE, this, false);
+            renderSettings();
+            return;
+        }
+        prefs.edit().putString(key, value).apply();
+        renderSettings();
+    }
+
+    void handleTextInput(String key, String value, SharedPreferences prefs) {
+        String trimmed = value == null ? "" : value.trim();
+        if ("doh_endpoint".equals(key)) {
+            if (!isValidDohEndpoint(trimmed)) {
+                Toast.makeText(this, R.string.msg_invalid_doh_endpoint, Toast.LENGTH_LONG).show();
+                return;
+            }
+            prefs.edit().putString(key, trimmed).apply();
+            renderSettings();
+            return;
+        }
+        if ("pause".equals(key) || "ttl".equals(key) || "pcap_record_size".equals(key)
+                || "pcap_file_size".equals(key) || "socks5_port".equals(key)) {
+            if (!TextUtils.isEmpty(trimmed)) {
+                try {
+                    int parsed = Integer.parseInt(trimmed);
+                    boolean valid = "socks5_port".equals(key)
+                            ? (parsed >= 1 && parsed <= 65535)
+                            : (parsed >= 0);
+                    if (!valid) {
+                        Toast.makeText(this, R.string.msg_invalid_number, Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                } catch (NumberFormatException ex) {
+                    Toast.makeText(this, R.string.msg_invalid_number, Toast.LENGTH_SHORT).show();
+                    return;
+                }
+            }
+        }
+        if (TextUtils.isEmpty(trimmed))
+            prefs.edit().remove(key).apply();
+        else
+            prefs.edit().putString(key, trimmed).apply();
+        renderSettings();
+    }
+
+    private void handleActionClick(String key) {
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        switch (key) {
+            case "export":
+                try {
+                    startActivityForResult(getIntentCreateExport(), REQUEST_EXPORT);
+                } catch (ActivityNotFoundException ex) {
+                    Toast.makeText(this, R.string.msg_no_file_manager, Toast.LENGTH_LONG).show();
+                }
+                break;
+            case "import":
+                try {
+                    startActivityForResult(getIntentOpenExport(), REQUEST_IMPORT);
+                } catch (ActivityNotFoundException ex) {
+                    Toast.makeText(this, R.string.msg_no_file_manager, Toast.LENGTH_LONG).show();
+                }
+                break;
+            case "manage_blocklists":
+                startActivity(new Intent(this, net.kollnig.missioncontrol.ActivityBlocklists.class));
+                break;
+            case "hosts_download": {
+                Constraints constraints = new Constraints.Builder()
+                        .setRequiredNetworkType(NetworkType.CONNECTED)
+                        .build();
+                OneTimeWorkRequest downloadWork = new OneTimeWorkRequest.Builder(HostsDownloadWorker.class)
+                        .setConstraints(constraints)
+                        .addTag("ManualHostsDownload")
+                        .build();
+                WorkManager.getInstance(this).enqueue(downloadWork);
+                break;
+            }
+            case "exclude_all_tracking":
+                Util.areYouSure(this, R.string.summary_exclude_all_tracking, () -> setTrackerProtectionForAll(false));
+                break;
+            case "include_all_tracking":
+                Util.areYouSure(this, R.string.summary_include_all_tracking, () -> setTrackerProtectionForAll(true));
+                break;
+            case "forwarding":
+                startActivity(new Intent(this, ActivityForwarding.class));
+                break;
+            case "show_resolved":
+                startActivity(new Intent(this, ActivityDns.class));
+                break;
+            case "wg_profile_manage":
+                startActivity(new Intent(this, net.kollnig.missioncontrol.ActivityWireGuardProfiles.class));
+                break;
+            case "ts_login":
+                tailscaleSettings.requestLogin();
+                break;
+            case "ts_logout":
+                tailscaleSettings.requestLogout();
+                break;
+            case "battery_experiment":
+                BatteryExperimentHooks.openActivity(this);
+                break;
+            case "vpn_key_rotate_now":
+                Toast.makeText(this, R.string.msg_vpn_key_rotation_started, Toast.LENGTH_LONG).show();
+                net.kollnig.missioncontrol.wg.VpnKeyRotationManager.rotateAllForDebug(
+                        this,
+                        summary -> wgStatusHandler.post(() ->
+                                Toast.makeText(this, summary, Toast.LENGTH_LONG).show()));
+                break;
         }
     }
 
     @Override
     public void onSharedPreferenceChanged(SharedPreferences prefs, String name) {
-        if ("show_stats".equals(name)) {
-            ((TwoStatePreference) getPreferenceScreen().findPreference(name)).setChecked(prefs.getBoolean(name, false));
-        }
-
         Object value = prefs.getAll().get(name);
         if (value instanceof String && "".equals(value))
             prefs.edit().remove(name).apply();
 
-        // Dependencies
-        if ("pause".equals(name))
-            getPreferenceScreen().findPreference(name)
-                    .setTitle(getString(R.string.setting_pause, prefs.getString(name, "10")));
-
-        else if ("ip6".equals(name))
+        if ("ip6".equals(name) || "use_metered".equals(name) || "wifi_only".equals(name)
+                || "screen_delay".equals(name) || "tcp_mss_clamp".equals(name)
+                || "notify_access".equals(name) || "use_hosts".equals(name)
+                || "rcode".equals(name) || "socks5_enabled".equals(name)
+                || "socks5_port".equals(name) || "socks5_username".equals(name)
+                || "socks5_password".equals(name) || "wg_enabled".equals(name)
+                || "wg_keepalive_when_screen_off".equals(name) || "loglevel".equals(name)) {
             ServiceSinkhole.reload("changed " + name, this, false);
-
-        else if ("use_metered".equals(name))
-            ServiceSinkhole.reload("changed " + name, this, false);
-
-        else if ("include_system_vpn".equals(name)) {
-            // Single user-facing "Monitor system apps" toggle. It drives three
-            // internal prefs kept in lock-step: include_system_vpn (VPN routing),
-            // manage_system (tracker detection/blocking for system apps), and
-            // show_system (visibility in the app list / insights).
+        } else if ("include_system_vpn".equals(name)) {
             boolean monitorSystem = prefs.getBoolean(name, false);
             prefs.edit().putBoolean("manage_system", monitorSystem).apply();
             prefs.edit().putBoolean("show_system", monitorSystem).apply();
             if (!monitorSystem)
                 prefs.edit().putBoolean("show_user", true).apply();
             ServiceSinkhole.reload("changed " + name, this, false);
-
-        } else if ("wifi_only".equals(name) ||
-                "screen_delay".equals(name))
-            ServiceSinkhole.reload("changed " + name, this, false);
-
-        else if ("disable_on_call".equals(name)) {
-            if (prefs.getBoolean(name, false)) {
-                if (checkPermissions(name))
-                    ServiceSinkhole.reload("changed " + name, this, false);
-            } else
+        } else if ("disable_on_call".equals(name)) {
+            if (!prefs.getBoolean(name, false) || checkPermissions(name))
                 ServiceSinkhole.reload("changed " + name, this, false);
-        }
-
-        else if ("blocking_mode".equals(name)) {
+        } else if ("blocking_mode".equals(name)) {
             if (Util.isPlayStoreInstall(this))
                 BlockingMode.enforcePlayStoreMode(this);
-            String mode = BlockingMode.getMode(this);
-            Preference pref = getPreferenceScreen().findPreference(name);
-            if (pref != null)
-                updateBlockingModeSummary(pref, mode);
             BlockingMode.applyMode(this);
-        }
-
-        else if ("log_logcat".equals(name)) {
+        } else if ("log_logcat".equals(name)) {
             boolean research = prefs.getBoolean(name, false);
             if (prefs.getBoolean("sni_enabled", false) != research)
                 prefs.edit().putBoolean("sni_enabled", research).apply();
-            refreshResearchModeSummary();
             ServiceSinkhole.reload("changed " + name, this, false);
-        }
-
-        else if ("sni_enabled".equals(name)) {
-            refreshResearchModeSummary();
+        } else if ("sni_enabled".equals(name)) {
             ServiceSinkhole.reload("changed " + name, this, false);
-        }
-
-        else if ("tcp_mss_clamp".equals(name)) {
-            ServiceSinkhole.reload("changed " + name, this, false);
-        }
-
-        else if ("manage_system".equals(name)) {
+        } else if ("manage_system".equals(name)) {
             boolean manage = prefs.getBoolean(name, false);
             if (!manage)
                 prefs.edit().putBoolean("show_user", true).apply();
             prefs.edit().putBoolean("show_system", manage).apply();
             ServiceSinkhole.reload("changed " + name, this, false);
-
         } else if ("log_app".equals(name)) {
-            Intent ruleset = new Intent(ActivityMain.ACTION_RULES_CHANGED);
-            LocalBroadcastManager.getInstance(this).sendBroadcast(ruleset);
+            LocalBroadcastManager.getInstance(this).sendBroadcast(new Intent(ActivityMain.ACTION_RULES_CHANGED));
             ServiceSinkhole.reload("changed " + name, this, false);
-
-        } else if ("notify_access".equals(name))
-            ServiceSinkhole.reload("changed " + name, this, false);
-
-        else if ("use_hosts".equals(name))
-            ServiceSinkhole.reload("changed " + name, this, false);
-
-        else if ("vpn4".equals(name)) {
-            String vpn4 = prefs.getString(name, null);
+        } else if ("vpn4".equals(name) || "vpn6".equals(name)) {
+            String addr = prefs.getString(name, null);
             try {
-                checkAddress(vpn4, false);
-                prefs.edit().putString(name, vpn4.trim()).apply();
+                checkAddress(addr, false);
+                prefs.edit().putString(name, addr.trim()).apply();
             } catch (Throwable ex) {
                 prefs.edit().remove(name).apply();
-                ((EditTextPreference) getPreferenceScreen().findPreference(name)).setText(null);
-                if (!TextUtils.isEmpty(vpn4))
-                    Toast.makeText(ActivitySettings.this, ex.toString(), Toast.LENGTH_LONG).show();
+                if (!TextUtils.isEmpty(addr))
+                    Toast.makeText(this, ex.toString(), Toast.LENGTH_LONG).show();
             }
-            getPreferenceScreen().findPreference(name).setTitle(
-                    getString(R.string.setting_vpn4, prefs.getString(name, "10.1.10.1")));
             ServiceSinkhole.reload("changed " + name, this, false);
-
-        } else if ("vpn6".equals(name)) {
-            String vpn6 = prefs.getString(name, null);
-            try {
-                checkAddress(vpn6, false);
-                prefs.edit().putString(name, vpn6.trim()).apply();
-            } catch (Throwable ex) {
-                prefs.edit().remove(name).apply();
-                ((EditTextPreference) getPreferenceScreen().findPreference(name)).setText(null);
-                if (!TextUtils.isEmpty(vpn6))
-                    Toast.makeText(ActivitySettings.this, ex.toString(), Toast.LENGTH_LONG).show();
-            }
-            getPreferenceScreen().findPreference(name).setTitle(
-                    getString(R.string.setting_vpn6, prefs.getString(name, "fd00:1:fd00:1:fd00:1:fd00:1")));
-            ServiceSinkhole.reload("changed " + name, this, false);
-
         } else if ("dns".equals(name) || "dns2".equals(name)) {
             String dns = prefs.getString(name, null);
             try {
@@ -806,27 +475,13 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
                 prefs.edit().putString(name, dns.trim()).apply();
             } catch (Throwable ex) {
                 prefs.edit().remove(name).apply();
-                ((EditTextPreference) getPreferenceScreen().findPreference(name)).setText(null);
                 if (!TextUtils.isEmpty(dns))
-                    Toast.makeText(ActivitySettings.this, ex.toString(), Toast.LENGTH_LONG).show();
+                    Toast.makeText(this, ex.toString(), Toast.LENGTH_LONG).show();
             }
-            getPreferenceScreen().findPreference(name).setTitle(
-                    getString(R.string.setting_dns, prefs.getString(name, "-")));
             ServiceSinkhole.reload("changed " + name, this, false);
-
-        } else if ("doh_enabled".equals(name)) {
-            // Reset DoH client when toggled
+        } else if ("doh_enabled".equals(name) || "doh_endpoint".equals(name)) {
             net.kollnig.missioncontrol.dns.DnsOverHttpsClient.resetInstance();
             ServiceSinkhole.reload("changed " + name, this, false);
-
-        } else if ("doh_endpoint".equals(name)) {
-            Preference dohEndpoint = getPreferenceScreen().findPreference(name);
-            if (dohEndpoint != null)
-                dohEndpoint.setSummary(prefs.getString(name, BuildConfig.DEFAULT_DOH_ENDPOINT));
-            // Reset DoH client to pick up new endpoint
-            net.kollnig.missioncontrol.dns.DnsOverHttpsClient.resetInstance();
-            ServiceSinkhole.reload("changed " + name, this, false);
-
         } else if ("validate".equals(name)) {
             String host = prefs.getString(name, "www.f-droid.org");
             try {
@@ -834,82 +489,23 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
                 prefs.edit().putString(name, host.trim()).apply();
             } catch (Throwable ex) {
                 prefs.edit().remove(name).apply();
-                ((EditTextPreference) getPreferenceScreen().findPreference(name)).setText(null);
                 if (!TextUtils.isEmpty(host))
-                    Toast.makeText(ActivitySettings.this, ex.toString(), Toast.LENGTH_LONG).show();
+                    Toast.makeText(this, ex.toString(), Toast.LENGTH_LONG).show();
             }
-            getPreferenceScreen().findPreference(name).setTitle(
-                    getString(R.string.setting_validate, prefs.getString(name, "www.f-droid.org")));
             ServiceSinkhole.reload("changed " + name, this, false);
-
-        } else if ("ttl".equals(name))
-            getPreferenceScreen().findPreference(name).setTitle(
-                    getString(R.string.setting_ttl, prefs.getString(name, "259200")));
-
-        else if ("rcode".equals(name)) {
-            getPreferenceScreen().findPreference(name).setTitle(
-                    getString(R.string.setting_rcode, prefs.getString(name, "3")));
-            ServiceSinkhole.reload("changed " + name, this, false);
-
-        } else if ("socks5_enabled".equals(name))
-            ServiceSinkhole.reload("changed " + name, this, false);
-
-        else if ("socks5_addr".equals(name)) {
-            String socks5_addr = prefs.getString(name, null);
-            try {
-                if (!TextUtils.isEmpty(socks5_addr) && !Util.isNumericAddress(socks5_addr))
-                    throw new IllegalArgumentException("Bad address");
-            } catch (Throwable ex) {
+        } else if ("socks5_addr".equals(name)) {
+            String addr = prefs.getString(name, null);
+            if (!TextUtils.isEmpty(addr) && !Util.isNumericAddress(addr)) {
                 prefs.edit().remove(name).apply();
-                ((EditTextPreference) getPreferenceScreen().findPreference(name)).setText(null);
-                if (!TextUtils.isEmpty(socks5_addr))
-                    Toast.makeText(ActivitySettings.this, ex.toString(), Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "Bad address", Toast.LENGTH_LONG).show();
             }
-            getPreferenceScreen().findPreference(name).setTitle(
-                    getString(R.string.setting_socks5_addr, prefs.getString(name, "-")));
             ServiceSinkhole.reload("changed " + name, this, false);
-
-        } else if ("socks5_port".equals(name)) {
-            getPreferenceScreen().findPreference(name)
-                    .setTitle(getString(R.string.setting_socks5_port, prefs.getString(name, "-")));
-            ServiceSinkhole.reload("changed " + name, this, false);
-
-        } else if ("socks5_username".equals(name)) {
-            getPreferenceScreen().findPreference(name)
-                    .setTitle(getString(R.string.setting_socks5_username, prefs.getString(name, "-")));
-            ServiceSinkhole.reload("changed " + name, this, false);
-
-        } else if ("socks5_password".equals(name)) {
-            getPreferenceScreen().findPreference(name).setTitle(getString(R.string.setting_socks5_password,
-                    TextUtils.isEmpty(prefs.getString(name, "")) ? "-" : "*****"));
-            ServiceSinkhole.reload("changed " + name, this, false);
-
-        } else if (WgProfileManager.PREF_WG_PROFILE.equals(name) ||
-                WgProfileManager.PREF_WG_PROFILES.equals(name)) {
-            new WgProfileManager(this).migrateIfNeeded();
-            configureWireGuardProfiles(getPreferenceScreen(), prefs);
-            updateWireGuardStatus();
-
         } else if ("ts_enabled".equals(name)) {
-            if (tailscaleSettings != null) tailscaleSettings.update();
-            refreshResearchModeSummary();
             if (!net.kollnig.missioncontrol.diagnostics.BatteryExperimentHooks.isChangingTailscale())
                 ServiceSinkhole.reload("changed " + name, this, false);
-
-        } else if ("wg_enabled".equals(name)) {
-            updateWireGuardStatus();
-            refreshResearchModeSummary();
-            ServiceSinkhole.reload("changed " + name, this, false);
-
-        } else if ("wg_keepalive_when_screen_off".equals(name)) {
-            ServiceSinkhole.reload("changed " + name, this, false);
-
         } else if (Rule.PREF_WG_ROUTE_MODE.equals(name)) {
-            // The reload restarts the tunnel thread, which is what picks up the
-            // matching fwd53 change — that flag is only read at jni_run.
             Rule.clearCache(this);
             ServiceSinkhole.reload("changed " + name, this, false);
-
         } else if ("wg_config".equals(name)) {
             String wg_config = prefs.getString(name, null);
             boolean valid = true;
@@ -918,87 +514,535 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
                     net.kollnig.missioncontrol.wg.WgConfigParser.INSTANCE.parse(wg_config);
                 } catch (Throwable ex) {
                     valid = false;
-                    Toast.makeText(ActivitySettings.this,
-                            getString(R.string.msg_wg_config_invalid, ex.getMessage()),
-                            Toast.LENGTH_LONG).show();
-                    // Force-disable to avoid silently running with a bad config.
+                    Toast.makeText(this, getString(R.string.msg_wg_config_invalid, ex.getMessage()), Toast.LENGTH_LONG).show();
                     prefs.edit().putBoolean("wg_enabled", false).apply();
-                    eu.faircode.netguard.SwitchPreference enabledPref =
-                            (eu.faircode.netguard.SwitchPreference)
-                                    getPreferenceScreen().findPreference("wg_enabled");
-                    if (enabledPref != null) enabledPref.setChecked(false);
                 }
             }
             if (valid)
                 new WgProfileManager(this).updateActiveProfileConfig(wg_config);
-            configureWireGuardProfiles(getPreferenceScreen(), prefs);
-            updateWireGuardStatus();
-            refreshResearchModeSummary();
             ServiceSinkhole.reload("changed " + name, this, false);
-
         } else if ("pcap_record_size".equals(name) || "pcap_file_size".equals(name)) {
-            if ("pcap_record_size".equals(name))
-                getPreferenceScreen().findPreference(name)
-                        .setTitle(getString(R.string.setting_pcap_record_size, prefs.getString(name, "64")));
-            else
-                getPreferenceScreen().findPreference(name)
-                        .setTitle(getString(R.string.setting_pcap_file_size, prefs.getString(name, "2")));
-
             ServiceSinkhole.setPcap(false, this);
-
             File pcap_file = new File(getDir("data", MODE_PRIVATE), "netguard.pcap");
             if (pcap_file.exists() && !pcap_file.delete())
                 Log.w(TAG, "Delete PCAP failed");
-
             if (prefs.getBoolean("pcap", false))
                 ServiceSinkhole.setPcap(true, this);
-
-        } else if ("show_stats".equals(name))
+        } else if ("show_stats".equals(name)) {
             ServiceSinkhole.reloadStats("changed " + name, this);
-
-        else if ("stats_frequency".equals(name))
-            getPreferenceScreen().findPreference(name)
-                    .setTitle(getString(R.string.setting_stats_frequency, prefs.getString(name, "1000")));
-
-        else if ("stats_samples".equals(name))
-            getPreferenceScreen().findPreference(name)
-                    .setTitle(getString(R.string.setting_stats_samples, prefs.getString(name, "90")));
-
-        else if ("hosts_last_download".equals(name)) {
-            String last = prefs.getString(name, null);
-            if (last != null) {
-                Preference pref = getPreferenceScreen().findPreference("hosts_download");
-                if (pref != null)
-                    pref.setSummary(getString(R.string.msg_update_last, last));
-            }
-        }
-
-        else if ("loglevel".equals(name))
-            ServiceSinkhole.reload("changed " + name, this, false);
-
-        else if ("domain_based_blocking".equals(name)) {
+        } else if ("domain_based_blocking".equals(name)) {
             TrackerList.reloadTrackerData(this);
             ServiceSinkhole.clearTrackerCaches();
         }
 
-        // Android 17 blocks traffic to local network addresses unless the user
-        // grants ACCESS_LOCAL_NETWORK. Ask as soon as a setting starts pointing
-        // TrackerControl at the LAN — a custom DNS server, a local Secure DNS
-        // resolver, a WireGuard peer at home, or the full-tunnel tethering
-        // mode — rather than letting name resolution fail silently (#701).
-        // Asked at most once per visit: writing back a trimmed value re-enters
-        // this listener, and a second request while the dialog is up is dropped
-        // by the framework.
         if (LocalNetworkAccess.isRelevantSetting(name))
-            // The new value may point somewhere else entirely; what we saw the
-            // old one reach says nothing about it.
             LocalNetworkAccess.forgetObservations();
 
         if (!requestedLocalNetwork && LocalNetworkAccess.isRelevantSetting(name)
                 && LocalNetworkAccess.isMissing(this)) {
             requestedLocalNetwork = true;
-            requestPermissions(new String[] { LocalNetworkAccess.PERMISSION }, REQUEST_LOCAL_NETWORK);
+            requestPermissions(new String[]{LocalNetworkAccess.PERMISSION}, REQUEST_LOCAL_NETWORK);
         }
+
+        renderSettings();
+    }
+
+    private void renderSettings() {
+        if (!running || screenController == null)
+            return;
+
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        List<SettingsSection> sections = new ArrayList<>();
+        String title;
+
+        switch (currentPage) {
+            case ADVANCED:
+                title = getString(R.string.setting_advanced_options);
+                sections.add(buildAdvancedSection(prefs));
+                break;
+            case WIREGUARD:
+                title = getString(R.string.setting_wireguard);
+                sections.add(buildWireGuardSection(prefs));
+                break;
+            case TAILSCALE:
+                title = getString(R.string.setting_ts_title);
+                sections.add(buildTailscaleSection(prefs));
+                break;
+            case DEVELOPMENT:
+                title = "Development";
+                sections.add(buildDevelopmentSection(prefs));
+                break;
+            case ROOT:
+            default:
+                title = getString(R.string.menu_settings);
+                sections.add(buildOptionsSection(prefs));
+                sections.add(buildFurtherOptionsSection(prefs));
+                sections.add(buildBackupSection());
+                break;
+        }
+
+        screenController.update(new SettingsScreenModel(currentPage, title, sections));
+    }
+
+    private SettingsSection buildOptionsSection(SharedPreferences prefs) {
+        List<SettingsItem> items = new ArrayList<>();
+        String mode = BlockingMode.getMode(this);
+        String modeSummary = getBlockingModeSummary(mode);
+        List<Pair<String, String>> modeEntries = new ArrayList<>();
+        if (Util.isPlayStoreInstall(this)) {
+            modeEntries.add(new Pair<>(getString(R.string.blocking_mode_minimal), BlockingMode.MODE_MINIMAL));
+        } else {
+            String[] names = getResources().getStringArray(R.array.blockingModeNames);
+            String[] values = getResources().getStringArray(R.array.blockingModeValues);
+            for (int i = 0; i < Math.min(names.length, values.length); i++)
+                modeEntries.add(new Pair<>(names[i], values[i]));
+        }
+        items.add(new SettingsItem.ListItem(
+                "blocking_mode",
+                getString(R.string.setting_blocking_mode),
+                modeSummary,
+                mode,
+                modeEntries,
+                !Util.isPlayStoreInstall(this)));
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            items.add(new SettingsItem.SwitchItem(
+                    TrackerControlThemeKt.PREF_DYNAMIC_COLOR,
+                    getString(R.string.setting_dynamic_color),
+                    getString(R.string.summary_dynamic_color),
+                    prefs.getBoolean(TrackerControlThemeKt.PREF_DYNAMIC_COLOR, false),
+                    true));
+        }
+
+        items.add(new SettingsItem.SwitchItem(
+                "log_logcat",
+                getString(R.string.setting_log_logcat),
+                getResearchModeSummaryText(prefs),
+                prefs.getBoolean("log_logcat", false),
+                true));
+
+        items.add(new SettingsItem.SwitchItem(
+                "disable_on_call",
+                getString(R.string.setting_call),
+                getString(R.string.summary_call),
+                prefs.getBoolean("disable_on_call", false),
+                true));
+
+        return new SettingsSection(getString(R.string.setting_options), items);
+    }
+
+    private SettingsSection buildFurtherOptionsSection(SharedPreferences prefs) {
+        List<SettingsItem> items = new ArrayList<>();
+        items.add(new SettingsItem.NavigationItem(
+                "screen_advanced_options",
+                SettingsPage.ADVANCED,
+                getString(R.string.setting_advanced_options),
+                null,
+                true));
+        items.add(new SettingsItem.NavigationItem(
+                "screen_wireguard",
+                SettingsPage.WIREGUARD,
+                getString(R.string.setting_wireguard),
+                getWireGuardStatusSummary(prefs).toString(),
+                true));
+        items.add(new SettingsItem.NavigationItem(
+                "screen_tailscale",
+                SettingsPage.TAILSCALE,
+                getString(R.string.setting_ts_title),
+                TailscaleSettings.buildSummary(this, prefs, TailscaleManager.snapshot()),
+                true));
+        if (Util.isDebuggable(this)) {
+            items.add(new SettingsItem.NavigationItem(
+                    "screen_development",
+                    SettingsPage.DEVELOPMENT,
+                    "Development",
+                    null,
+                    true));
+        }
+        return new SettingsSection(getString(R.string.setting_further_options), items);
+    }
+
+    private SettingsSection buildBackupSection() {
+        List<SettingsItem> items = new ArrayList<>();
+        items.add(new SettingsItem.ActionItem("export", getString(R.string.setting_export), null, true));
+        items.add(new SettingsItem.ActionItem("import", getString(R.string.setting_import), null, true));
+        return new SettingsSection(getString(R.string.setting_backup), items);
+    }
+
+    private SettingsSection buildAdvancedSection(SharedPreferences prefs) {
+        List<SettingsItem> items = new ArrayList<>();
+        boolean playStore = Util.isPlayStoreInstall(this);
+
+        items.add(new SettingsItem.TextInputItem(
+                "pause",
+                getString(R.string.setting_pause, prefs.getString("pause", "10")),
+                getString(R.string.summary_pause),
+                prefs.getString("pause", "10"),
+                false,
+                true,
+                true));
+
+        if (!Util.isFDroidInstall() && !playStore) {
+            items.add(new SettingsItem.SwitchItem(
+                    "update_check",
+                    getString(R.string.setting_update),
+                    getString(R.string.summary_update),
+                    prefs.getBoolean("update_check", true),
+                    true));
+        }
+
+        boolean reloadChecked = prefs.getBoolean("reload_onconnectivity", false);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !reloadChecked) {
+            reloadChecked = true;
+            prefs.edit().putBoolean("reload_onconnectivity", true).apply();
+        }
+        items.add(new SettingsItem.SwitchItem(
+                "reload_onconnectivity",
+                getString(R.string.setting_reload_onconnectivity),
+                null,
+                reloadChecked,
+                Build.VERSION.SDK_INT < Build.VERSION_CODES.O));
+
+        items.add(new SettingsItem.SwitchItem(
+                "tcp_mss_clamp",
+                getString(R.string.setting_tcp_mss_clamp),
+                getString(R.string.summary_tcp_mss_clamp),
+                prefs.getBoolean("tcp_mss_clamp", false),
+                true));
+
+        boolean dohEnabled = prefs.getBoolean("doh_enabled", false);
+        items.add(new SettingsItem.SwitchItem(
+                "doh_enabled",
+                getString(R.string.setting_doh_enabled),
+                getString(R.string.summary_doh_enabled) + "\n" + getString(R.string.warning_beta),
+                dohEnabled,
+                true));
+
+        items.add(new SettingsItem.TextInputItem(
+                "doh_endpoint",
+                getString(R.string.setting_doh_endpoint),
+                prefs.getString("doh_endpoint", BuildConfig.DEFAULT_DOH_ENDPOINT),
+                prefs.getString("doh_endpoint", BuildConfig.DEFAULT_DOH_ENDPOINT),
+                false,
+                dohEnabled,
+                SettingsInputKind.URI));
+
+        items.add(new SettingsItem.SwitchItem(
+                "doh_dns_fallback",
+                getString(R.string.setting_doh_dns_fallback),
+                getString(R.string.summary_doh_dns_fallback),
+                prefs.getBoolean("doh_dns_fallback", false),
+                dohEnabled));
+
+        items.add(new SettingsItem.SwitchItem(
+                "block_dot",
+                getString(R.string.setting_block_dot),
+                getString(R.string.summary_block_dot),
+                prefs.getBoolean("block_dot", true),
+                true));
+
+        if (!playStore) {
+            items.add(new SettingsItem.SwitchItem(
+                    "domain_based_blocking",
+                    getString(R.string.setting_domain_based_blocked),
+                    getString(R.string.summary_domain_based_blocking),
+                    prefs.getBoolean("domain_based_blocking", false),
+                    true));
+        }
+
+        items.add(new SettingsItem.SwitchItem(
+                "include_system_vpn",
+                getString(R.string.setting_monitor_system),
+                getString(R.string.summary_monitor_system),
+                prefs.getBoolean("include_system_vpn", false),
+                true));
+
+        items.add(new SettingsItem.ActionItem(
+                "exclude_all_tracking",
+                getString(R.string.setting_exclude_all_tracking),
+                getString(R.string.summary_exclude_all_tracking),
+                true));
+
+        items.add(new SettingsItem.ActionItem(
+                "include_all_tracking",
+                getString(R.string.setting_include_all_tracking),
+                getString(R.string.summary_include_all_tracking),
+                true));
+
+        if (!BlockingMode.isPlayStoreBuild()) {
+            items.add(new SettingsItem.ActionItem(
+                    "manage_blocklists",
+                    getString(R.string.title_blocklists),
+                    getString(R.string.summary_manage_blocklists),
+                    true));
+            String lastDownload = prefs.getString("hosts_last_download", null);
+            items.add(new SettingsItem.ActionItem(
+                    "hosts_download",
+                    getString(R.string.setting_hosts_update),
+                    lastDownload == null ? null : getString(R.string.msg_update_last, lastDownload),
+                    true));
+            items.add(new SettingsItem.SwitchItem(
+                    "hosts_auto_update",
+                    getString(R.string.setting_hosts_auto_update),
+                    getString(R.string.summary_hosts_auto_update),
+                    prefs.getBoolean("hosts_auto_update", false),
+                    true));
+        }
+
+        if (!playStore) {
+            items.add(new SettingsItem.SwitchItem(
+                    "log_app",
+                    getString(R.string.setting_log_app),
+                    getString(R.string.summary_log_app),
+                    prefs.getBoolean("log_app", true),
+                    true));
+            items.add(new SettingsItem.ActionItem(
+                    "forwarding",
+                    getString(R.string.setting_forwarding),
+                    null,
+                    true));
+        }
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            items.add(new SettingsItem.SwitchItem(
+                    "handover",
+                    getString(R.string.setting_handover),
+                    null,
+                    prefs.getBoolean("handover", false),
+                    true));
+        }
+
+        items.add(new SettingsItem.TextInputItem(
+                "vpn4",
+                getString(R.string.setting_vpn4, prefs.getString("vpn4", "10.1.10.1")),
+                null,
+                prefs.getString("vpn4", "10.1.10.1"),
+                false,
+                true,
+                SettingsInputKind.PHONE));
+        items.add(new SettingsItem.TextInputItem(
+                "vpn6",
+                getString(R.string.setting_vpn6, prefs.getString("vpn6", "fd00:1:fd00:1:fd00:1:fd00:1")),
+                null,
+                prefs.getString("vpn6", "fd00:1:fd00:1:fd00:1:fd00:1"),
+                false,
+                true));
+        items.add(new SettingsItem.TextInputItem(
+                "dns",
+                getString(R.string.setting_dns, prefs.getString("dns", "-")),
+                null,
+                prefs.getString("dns", ""),
+                false,
+                true));
+        items.add(new SettingsItem.TextInputItem(
+                "dns2",
+                getString(R.string.setting_dns, prefs.getString("dns2", "-")),
+                null,
+                prefs.getString("dns2", ""),
+                false,
+                true));
+        items.add(new SettingsItem.TextInputItem(
+                "validate",
+                getString(R.string.setting_validate, prefs.getString("validate", "www.f-droid.org")),
+                getString(R.string.summary_validate),
+                prefs.getString("validate", "www.f-droid.org"),
+                false,
+                true));
+        items.add(new SettingsItem.TextInputItem(
+                "ttl",
+                getString(R.string.setting_ttl, prefs.getString("ttl", "259200")),
+                null,
+                prefs.getString("ttl", "259200"),
+                false,
+                true,
+                true));
+        items.add(new SettingsItem.SwitchItem(
+                "socks5_enabled",
+                getString(R.string.setting_socks5_enabled),
+                getString(R.string.summary_socks5_enabled),
+                prefs.getBoolean("socks5_enabled", false),
+                true));
+        items.add(new SettingsItem.TextInputItem(
+                "socks5_addr",
+                getString(R.string.setting_socks5_addr, prefs.getString("socks5_addr", "-")),
+                null,
+                prefs.getString("socks5_addr", ""),
+                false,
+                true));
+        items.add(new SettingsItem.TextInputItem(
+                "socks5_port",
+                getString(R.string.setting_socks5_port, prefs.getString("socks5_port", "-")),
+                null,
+                prefs.getString("socks5_port", ""),
+                false,
+                true,
+                true));
+        items.add(new SettingsItem.TextInputItem(
+                "socks5_username",
+                getString(R.string.setting_socks5_username, prefs.getString("socks5_username", "-")),
+                null,
+                prefs.getString("socks5_username", ""),
+                false,
+                true));
+        items.add(new SettingsItem.TextInputItem(
+                "socks5_password",
+                getString(R.string.setting_socks5_password,
+                        TextUtils.isEmpty(prefs.getString("socks5_username", "")) ? "-" : "*****"),
+                null,
+                prefs.getString("socks5_password", ""),
+                true,
+                true));
+        items.add(new SettingsItem.TextInputItem(
+                "pcap_record_size",
+                getString(R.string.setting_pcap_record_size, prefs.getString("pcap_record_size", "64")),
+                null,
+                prefs.getString("pcap_record_size", "64"),
+                false,
+                true,
+                true));
+        items.add(new SettingsItem.TextInputItem(
+                "pcap_file_size",
+                getString(R.string.setting_pcap_file_size, prefs.getString("pcap_file_size", "2")),
+                null,
+                prefs.getString("pcap_file_size", "2"),
+                false,
+                true,
+                true));
+        items.add(new SettingsItem.ActionItem(
+                "show_resolved",
+                getString(R.string.setting_show_resolved),
+                null,
+                true));
+
+        return new SettingsSection(getString(R.string.setting_advanced_options), items);
+    }
+
+    private SettingsSection buildWireGuardSection(SharedPreferences prefs) {
+        List<SettingsItem> items = new ArrayList<>();
+        items.add(new SettingsItem.InfoItem(
+                "wg_status",
+                getString(R.string.setting_wg_status),
+                getWireGuardStatusSummary(prefs).toString(),
+                true));
+        items.add(new SettingsItem.SwitchItem(
+                "wg_enabled",
+                getString(R.string.setting_wg_enabled),
+                getString(R.string.summary_wg_enabled),
+                prefs.getBoolean("wg_enabled", false),
+                true));
+
+        WgProfileManager manager = new WgProfileManager(this);
+        List<WgProfileManager.Profile> profiles = manager.getProfiles();
+        WgProfileManager.Profile activeProfile = manager.getActiveProfile();
+        List<Pair<String, String>> profileEntries = new ArrayList<>();
+        for (WgProfileManager.Profile p : profiles)
+            profileEntries.add(new Pair<>(p.name, p.id));
+        items.add(new SettingsItem.ListItem(
+                WgProfileManager.PREF_WG_PROFILE,
+                getString(R.string.setting_wg_profile),
+                profiles.isEmpty()
+                        ? getString(R.string.summary_wg_profile_none)
+                        : (activeProfile == null ? getString(R.string.summary_wg_profile) : activeProfile.name),
+                manager.getActiveProfileId(),
+                profileEntries,
+                !profiles.isEmpty()));
+
+        items.add(new SettingsItem.ActionItem(
+                "wg_profile_manage",
+                getString(R.string.setting_wg_profile_manage),
+                getString(R.string.summary_wg_profile_manage),
+                true));
+
+        List<Pair<String, String>> routeEntries = new ArrayList<>();
+        String[] routeNames = getResources().getStringArray(R.array.wgRouteModeNames);
+        String[] routeValues = getResources().getStringArray(R.array.wgRouteModeValues);
+        for (int i = 0; i < Math.min(routeNames.length, routeValues.length); i++)
+            routeEntries.add(new Pair<>(routeNames[i], routeValues[i]));
+        items.add(new SettingsItem.ListItem(
+                Rule.PREF_WG_ROUTE_MODE,
+                getString(R.string.setting_wg_route_mode),
+                getString(R.string.summary_wg_route_mode),
+                prefs.getString(Rule.PREF_WG_ROUTE_MODE, "all"),
+                routeEntries,
+                true));
+
+        items.add(new SettingsItem.SwitchItem(
+                "wg_keepalive_when_screen_off",
+                getString(R.string.setting_wg_keepalive_when_screen_off),
+                getString(R.string.summary_wg_keepalive_when_screen_off),
+                prefs.getBoolean("wg_keepalive_when_screen_off", false),
+                true));
+
+        return new SettingsSection(getString(R.string.setting_wireguard), items);
+    }
+
+    private SettingsSection buildTailscaleSection(SharedPreferences prefs) {
+        List<SettingsItem> items = new ArrayList<>();
+        TailscaleSnapshot state = TailscaleManager.snapshot();
+        boolean enabled = prefs.getBoolean("ts_enabled", false);
+
+        items.add(new SettingsItem.InfoItem(
+                "ts_status",
+                getString(R.string.setting_ts_status),
+                TailscaleSettings.buildSummary(this, prefs, state),
+                true));
+        items.add(new SettingsItem.SwitchItem(
+                "ts_enabled",
+                getString(R.string.setting_ts_enabled),
+                getString(R.string.summary_ts_enabled),
+                enabled,
+                true));
+        items.add(new SettingsItem.ActionItem(
+                "ts_login",
+                getString(R.string.setting_ts_login),
+                null,
+                TailscaleSettings.isLoginEnabled(prefs, state)));
+        items.add(new SettingsItem.ActionItem(
+                "ts_logout",
+                getString(R.string.setting_ts_logout),
+                null,
+                true));
+        if (BatteryExperimentHooks.isAvailable()) {
+            String experimentTitle = BatteryExperimentHooks.getTitle(this);
+            if (!TextUtils.isEmpty(experimentTitle)) {
+                items.add(new SettingsItem.ActionItem(
+                        "battery_experiment",
+                        experimentTitle,
+                        null,
+                        true));
+            }
+        }
+
+        return new SettingsSection(getString(R.string.setting_ts_title), items);
+    }
+
+    private SettingsSection buildDevelopmentSection(SharedPreferences prefs) {
+        List<SettingsItem> items = new ArrayList<>();
+        List<Pair<String, String>> logEntries = new ArrayList<>();
+        String[] names = getResources().getStringArray(R.array.logLevelNames);
+        String[] values = getResources().getStringArray(R.array.logLevelValues);
+        for (int i = 0; i < Math.min(names.length, values.length); i++)
+            logEntries.add(new Pair<>(names[i], values[i]));
+
+        items.add(new SettingsItem.ListItem(
+                "loglevel",
+                "Native log level",
+                "Log level verbose, debug and info will impact performance and battery usage",
+                prefs.getString("loglevel", "6"),
+                logEntries,
+                true));
+        items.add(new SettingsItem.SwitchItem(
+                "ip6",
+                getString(R.string.setting_ip6),
+                getString(R.string.summary_ip6),
+                prefs.getBoolean("ip6", true),
+                true));
+        items.add(new SettingsItem.ActionItem(
+                "vpn_key_rotate_now",
+                getString(R.string.setting_vpn_key_rotate_now),
+                getString(R.string.summary_vpn_key_rotate_now),
+                true));
+        return new SettingsSection("Development", items);
     }
 
     static void configureDohEndpointPreference(EditTextPreference preference) {
@@ -1065,11 +1109,6 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
             return getString(R.string.summary_wg_status_blocked, error);
 
         if (net.kollnig.missioncontrol.wg.WgEgress.INSTANCE.isRunning()) {
-            // The engine being up is not the same as a working tunnel:
-            // WireGuard handshakes lazily on the first packet, so "running"
-            // can mean "no peer has ever answered". Only claim "Connected"
-            // once an actual handshake has completed; otherwise the user sees
-            // "Connected" even with a wrong endpoint until traffic fails.
             Long handshake = net.kollnig.missioncontrol.wg.WgEgress.INSTANCE.latestHandshakeMillisOrNull();
             if (handshake != null && handshake > 0)
                 return getString(R.string.summary_wg_status_connected);
@@ -1079,107 +1118,58 @@ public class ActivitySettings extends AppCompatActivity implements SharedPrefere
         return getString(R.string.summary_wg_status_starting);
     }
 
-    private void updateWireGuardStatus() {
-        PreferenceScreen screen = getPreferenceScreen();
-        if (screen == null)
-            return;
-
-        CharSequence summary = getWireGuardStatusSummary(PreferenceManager.getDefaultSharedPreferences(this));
-        Preference pref = screen.findPreference("screen_wireguard");
-        if (pref != null)
-            pref.setSummary(summary);
-        pref = screen.findPreference("wg_status");
-        if (pref != null)
-            pref.setSummary(summary);
-    }
-
-    private void updateBlockingModeSummary(Preference pref, String mode) {
+    private String getBlockingModeSummary(String mode) {
         if (BlockingMode.MODE_MINIMAL.equals(mode))
-            pref.setSummary(R.string.summary_blocking_mode_minimal);
+            return getString(R.string.summary_blocking_mode_minimal);
         else if (BlockingMode.MODE_STRICT.equals(mode))
-            pref.setSummary(R.string.summary_blocking_mode_strict);
+            return getString(R.string.summary_blocking_mode_strict);
         else
-            pref.setSummary(R.string.summary_blocking_mode_standard);
+            return getString(R.string.summary_blocking_mode_standard);
     }
 
-    // SNI research mode reassembles the ClientHello on a per-flow session that
-    // only exists for directly-routed traffic (see handle_ip in ip.c): a flow
-    // the remote VPN tunnels never gets one, so research mode silently
-    // collects nothing for it. Say so on the Research preference itself,
-    // where sni_enabled is actually toggled, rather than on blocking_mode.
-    private void updateResearchModeSummary(Preference pref) {
-        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+    private String getResearchModeSummaryText(SharedPreferences prefs) {
         String base = getString(R.string.summary_log_logcat);
-        if (prefs.getBoolean("sni_enabled", false) && prefs.getBoolean("ts_enabled", false)) {
-            pref.setSummary(base + " " + getString(R.string.summary_sni_ts_note));
-            return;
-        }
-        if (prefs.getBoolean("sni_enabled", false) &&
-                prefs.getBoolean("wg_enabled", false) &&
-                !TextUtils.isEmpty(prefs.getString("wg_config", null)))
-            pref.setSummary(base + " " + getString(R.string.summary_sni_wg_note));
-        else
-            pref.setSummary(base);
-    }
-
-    // Re-derives the Research preference summary after a preference other than
-    // log_logcat itself changed the SNI-under-WireGuard note's condition
-    // (sni_enabled, wg_enabled, wg_config).
-    private void refreshResearchModeSummary() {
-        Preference pref = getPreferenceScreen().findPreference("log_logcat");
-        if (pref != null)
-            updateResearchModeSummary(pref);
+        if (prefs.getBoolean("sni_enabled", false) && prefs.getBoolean("ts_enabled", false))
+            return base + " " + getString(R.string.summary_sni_ts_note);
+        if (prefs.getBoolean("sni_enabled", false)
+                && prefs.getBoolean("wg_enabled", false)
+                && !TextUtils.isEmpty(prefs.getString("wg_config", null)))
+            return base + " " + getString(R.string.summary_sni_wg_note);
+        return base;
     }
 
     private void setTrackerProtectionForAll(boolean enabled) {
         SharedPreferences tracker_protect = getSharedPreferences("tracker_protect", Context.MODE_PRIVATE);
         SharedPreferences.Editor editor = tracker_protect.edit();
-
-        // Deliberately leave tracker_essential alone: bulk disabling and then
-        // re-enabling tracker protection returns a minimal-only app to its
-        // previous MINIMAL_ONLY choice.
         for (android.content.pm.PackageInfo pkg : Rule.getPackages(this))
             editor.putBoolean(pkg.packageName, enabled);
-
         editor.apply();
         ServiceSinkhole.reload("bulk tracker protect changed", this, false);
     }
 
     private boolean checkPermissions(String name) {
-        PreferenceScreen screen = getPreferenceScreen();
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
-
-        // Check if permission was revoked
         if ((name == null || "disable_on_call".equals(name)) && prefs.getBoolean("disable_on_call", false))
             if (!Util.hasPhoneStatePermission(this)) {
                 prefs.edit().putBoolean("disable_on_call", false).apply();
-                ((TwoStatePreference) screen.findPreference("disable_on_call")).setChecked(false);
-
-                requestPermissions(new String[] { Manifest.permission.READ_PHONE_STATE }, REQUEST_CALL);
-
+                requestPermissions(new String[]{Manifest.permission.READ_PHONE_STATE}, REQUEST_CALL);
                 if (name != null)
                     return false;
             }
-
         return true;
     }
 
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
-            @NonNull int[] grantResults) {
+                                           @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        PreferenceScreen screen = getPreferenceScreen();
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
-
         boolean granted = (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED);
-
-        if (requestCode == REQUEST_CALL) {
+        if (requestCode == REQUEST_CALL)
             prefs.edit().putBoolean("disable_on_call", granted).apply();
-            ((TwoStatePreference) screen.findPreference("disable_on_call")).setChecked(granted);
-        }
-
         if (granted)
             ServiceSinkhole.reload("permission granted", this, false);
+        renderSettings();
     }
 
     private void checkAddress(String address, boolean allow_local)

@@ -82,7 +82,6 @@ public class ProtectionActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_protection);
 
         Intent intent = getIntent();
         appPackageName = intent.getStringExtra(DetailsActivity.INTENT_EXTRA_APP_PACKAGENAME);
@@ -95,16 +94,8 @@ public class ProtectionActivity extends AppCompatActivity {
         if (TextUtils.isEmpty(appName))
             appName = appPackageName;
 
-        MaterialToolbar toolbar = findViewById(R.id.toolbar);
-        setSupportActionBar(toolbar);
-        if (getSupportActionBar() != null) {
-            getSupportActionBar().setDisplayHomeAsUpEnabled(true);
-            getSupportActionBar().setDisplayShowTitleEnabled(false);
-        }
-        toolbar.setTitle(R.string.protection_title);
-        toolbar.setSubtitle(appName);
-
-        composeProtection = findViewById(R.id.composeProtection);
+        composeProtection = new ComposeView(this);
+        setContentView(composeProtection);
         screenController = ProtectionScreen.install(
                 composeProtection,
                 buildScreenModel(),
@@ -135,24 +126,10 @@ public class ProtectionActivity extends AppCompatActivity {
                     public void onCompanyClick(String blockingKey) {
                         toggleCompany(blockingKey);
                     }
-                });
-
-        AppBarLayout appBar = findViewById(R.id.appbar);
-        final int appBarInitialTop = appBar.getPaddingTop();
-        ViewCompat.setOnApplyWindowInsetsListener(appBar, (v, insets) -> {
-            Insets sysBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            v.setPadding(v.getPaddingLeft(), appBarInitialTop + sysBars.top,
-                    v.getPaddingRight(), v.getPaddingBottom());
-            return insets;
-        });
-
-        final int composeInitialBottom = composeProtection.getPaddingBottom();
-        ViewCompat.setOnApplyWindowInsetsListener(composeProtection, (v, insets) -> {
-            Insets sysBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            v.setPadding(v.getPaddingLeft(), v.getPaddingTop(), v.getPaddingRight(),
-                    composeInitialBottom + sysBars.bottom);
-            return insets;
-        });
+                },
+                getString(R.string.protection_title),
+                appName,
+                this::finish);
 
         updateProtectionState();
     }

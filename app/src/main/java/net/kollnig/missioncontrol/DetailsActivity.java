@@ -80,6 +80,7 @@ public class DetailsActivity extends AppCompatActivity {
     private String appPackageName;
     private DetailsStateAdapter detailsStateAdapter;
     private ExportDatabaseCSVTask exportTask;
+    private ViewPager2 viewPager;
 
     /**
      * Saves the changed tracker settings
@@ -129,112 +130,79 @@ public class DetailsActivity extends AppCompatActivity {
             return;
         }
 
-        // Edge-to-edge is enabled globally by ApplicationEx via EdgeToEdge.enable()
-        setContentView(R.layout.activity_details);
-
         running = true;
 
         appUid = intent.getIntExtra(INTENT_EXTRA_APP_UID, -1);
         String appName = intent.getStringExtra(INTENT_EXTRA_APP_NAME);
+        if (TextUtils.isEmpty(appName))
+            appName = appPackageName;
         // Opening Details means the user has found where to adjust protection.
         PreferenceManager.getDefaultSharedPreferences(this).edit()
                 .putBoolean("hint_timeline_tap_entry", false)
                 .apply();
 
-        // Set up paging
         detailsStateAdapter = new DetailsStateAdapter(
                 this,
                 appPackageName,
                 appName,
                 appUid);
-        ViewPager2 viewPager = findViewById(R.id.view_pager);
-        viewPager
-                .setBackgroundColor(Common.isNight(this) ? android.graphics.Color.BLACK : android.graphics.Color.WHITE);
+        viewPager = new ViewPager2(this);
+        viewPager.setId(R.id.details_pager);
         viewPager.setAdapter(detailsStateAdapter);
-        TabLayout tabs = findViewById(R.id.tabs);
-        new TabLayoutMediator(tabs, viewPager,
-                (tab, position) -> tab.setText(getString(detailsStateAdapter.getPageTitle(position)))).attach();
 
-        // set toolbar and back arrow
-        Toolbar toolbar = findViewById(R.id.toolbar);
-        setSupportActionBar(toolbar);
-        Objects.requireNonNull(getSupportActionBar()).setDisplayHomeAsUpEnabled(true);
-
-        // Set title
-        getSupportActionBar().setDisplayShowTitleEnabled(false);
-        toolbar.setTitle(getString(R.string.app_info));
-        toolbar.setSubtitle(appName);
-
-        // Apply window insets so content avoids status/navigation bars.
-        // Use padding (not margin) so the AppBarLayout's colored background
-        // extends behind the transparent status bar on API 35+.
-        AppBarLayout appBar = findViewById(R.id.appbar);
-        final int appBarInitialLeft = appBar.getPaddingLeft();
-        final int appBarInitialTop = appBar.getPaddingTop();
-        final int appBarInitialRight = appBar.getPaddingRight();
-        final int appBarInitialBottom = appBar.getPaddingBottom();
-
-        ViewCompat.setOnApplyWindowInsetsListener(appBar, (v, insets) -> {
-            Insets sysBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            v.setPadding(appBarInitialLeft, appBarInitialTop + sysBars.top,
-                    appBarInitialRight, appBarInitialBottom);
-            return insets;
-        });
-
-        final int pagerInitialLeft = viewPager.getPaddingLeft();
-        final int pagerInitialTop = viewPager.getPaddingTop();
-        final int pagerInitialRight = viewPager.getPaddingRight();
-        final int pagerInitialBottom = viewPager.getPaddingBottom();
-        ViewCompat.setOnApplyWindowInsetsListener(viewPager, (v, insets) -> {
-            Insets sysBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            int extraPadding = eu.faircode.netguard.Util.dips2pixels(16, this);
-            v.setPadding(pagerInitialLeft + sysBars.left, pagerInitialTop, pagerInitialRight + sysBars.right,
-                    pagerInitialBottom + sysBars.bottom + extraPadding);
-            return insets;
-        });
-    }
-
-    @Override
-    public boolean onCreateOptionsMenu(Menu menu) {
-        getMenuInflater().inflate(R.menu.menu_details, menu);
-        return true;
-    }
-
-    @Override
-    public boolean onOptionsItemSelected(MenuItem item) {
-        int itemId = item.getItemId();// Respond to the action bar's Up/Home button
-        if (itemId == android.R.id.home) {
-            NavUtils.navigateUpFromSameTask(this);
-            return true;
-        } else if (itemId == R.id.action_export_csv) {
-            startActivityForResult(getIntentCreateExport(), REQUEST_EXPORT);
-            return true;
-        } else if (itemId == R.id.action_clear) {
-            Util.areYouSure(this, R.string.msg_clear_activity, new Util.DoubtListener() {
-                @Override
-                public void onSure() {
-                    if (running) {
-                        DatabaseHelper dh = DatabaseHelper.getInstance(DetailsActivity.this);
-                        dh.clearAccess(appUid, false);
-                        detailsStateAdapter.updateTrackerLists();
-                    }
-                }
-            });
-            return true;
-        } else if (itemId == R.id.action_launch) {
-            Intent launch = Common.getLaunchIntent(this, appPackageName);
-            if (launch != null)
-                startActivity(launch);
-            else
-                Toast.makeText(this, R.string.launch_app_failed, Toast.LENGTH_SHORT).show();
-            return true;
-        } else if (itemId == R.id.action_uninstall) {
-            Intent intent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-            intent.setData(Uri.parse("package:" + appPackageName));
-            startActivity(intent);
-            return true;
+        List<String> tabTitles = new ArrayList<>();
+        for (int i = 0; i < detailsStateAdapter.getItemCount(); i++) {
+            tabTitles.add(getString(detailsStateAdapter.getPageTitle(i)));
         }
-        return super.onOptionsItemSelected(item);
+
+        androidx.compose.ui.platform.ComposeView composeView =
+                new androidx.compose.ui.platform.ComposeView(this);
+        composeView.setId(R.id.compose_details);
+        setContentView(composeView);
+
+        net.kollnig.missioncontrol.ui.compose.DetailsScreen.installWithPager(
+                composeView,
+                appName,
+                tabTitles,
+                viewPager,
+                new net.kollnig.missioncontrol.ui.compose.DetailsScreenCallbacks() {
+                    @Override
+                    public void onNavigateUp() {
+                        NavUtils.navigateUpFromSameTask(DetailsActivity.this);
+                    }
+
+                    @Override
+                    public void onLaunchApp() {
+                        Intent launch = Common.getLaunchIntent(DetailsActivity.this, appPackageName);
+                        if (launch != null)
+                            startActivity(launch);
+                        else
+                            Toast.makeText(DetailsActivity.this, R.string.launch_app_failed, Toast.LENGTH_SHORT).show();
+                    }
+
+                    @Override
+                    public void onExportCsv() {
+                        startActivityForResult(getIntentCreateExport(), REQUEST_EXPORT);
+                    }
+
+                    @Override
+                    public void onUninstallApp() {
+                        Intent uninstallIntent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                        uninstallIntent.setData(Uri.parse("package:" + appPackageName));
+                        startActivity(uninstallIntent);
+                    }
+
+                    @Override
+                    public void onClearActivity() {
+                        Util.areYouSure(DetailsActivity.this, R.string.msg_clear_activity, () -> {
+                            if (running) {
+                                DatabaseHelper dh = DatabaseHelper.getInstance(DetailsActivity.this);
+                                dh.clearAccess(appUid, false);
+                                detailsStateAdapter.updateTrackerLists();
+                            }
+                        });
+                    }
+                });
     }
 
     /**
@@ -368,9 +336,11 @@ public class DetailsActivity extends AppCompatActivity {
 
             if (running) {
                 if (success) {
-                    View v = findViewById(R.id.view_pager);
-                    Snackbar s = Snackbar.make(v, R.string.exported, Snackbar.LENGTH_LONG);
-                    s.show();
+                    if (viewPager != null) {
+                        Snackbar.make(viewPager, R.string.exported, Snackbar.LENGTH_LONG).show();
+                    } else {
+                        Toast.makeText(DetailsActivity.this, R.string.exported, Toast.LENGTH_SHORT).show();
+                    }
                 } else {
                     Toast.makeText(DetailsActivity.this, R.string.export_failed, Toast.LENGTH_SHORT).show();
                 }

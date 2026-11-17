@@ -61,9 +61,6 @@ public class ActivityBlocklists extends AppCompatActivity {
         composeView.setId(R.id.compose_blocklists);
         setContentView(composeView);
 
-        getSupportActionBar().setTitle(R.string.title_blocklists);
-        getSupportActionBar().setDisplayHomeAsUpEnabled(true);
-
         manager = BlocklistManager.getInstance(this);
         manager.migrateIfNeeded();
 
@@ -71,6 +68,11 @@ public class ActivityBlocklists extends AppCompatActivity {
                 composeView,
                 buildScreenModel(),
                 new BlocklistsScreenCallbacks() {
+                    @Override
+                    public void onNavigateUp() {
+                        finish();
+                    }
+
                     @Override
                     public void onAdd() {
                         showAddDialog(null);

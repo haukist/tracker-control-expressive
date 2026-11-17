@@ -77,6 +77,14 @@ public final class BatteryExperimentController implements BatteryExperimentEngin
     }
     static BatteryExperimentController get(Context context) { initialize(context); return instance; }
 
+    public static String getTitle(Context context) {
+        return context.getString(net.kollnig.missioncontrol.R.string.battery_experiment_title);
+    }
+
+    public static void openActivity(Context context) {
+        context.startActivity(new Intent(context, BatteryExperimentActivity.class));
+    }
+
     public static void configurePreference(AppCompatActivity activity, PreferenceScreen screen) {
         PreferenceScreen tailscale = screen.findPreference("screen_tailscale");
         if (tailscale == null || tailscale.findPreference("battery_experiment") != null) return;

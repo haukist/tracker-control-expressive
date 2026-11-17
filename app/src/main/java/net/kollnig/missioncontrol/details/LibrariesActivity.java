@@ -90,7 +90,6 @@ public class LibrariesActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_libraries);
 
         Intent intent = getIntent();
         appPackageName = intent.getStringExtra(DetailsActivity.INTENT_EXTRA_APP_PACKAGENAME);
@@ -102,17 +101,9 @@ public class LibrariesActivity extends AppCompatActivity {
         if (TextUtils.isEmpty(appName))
             appName = appPackageName;
 
-        MaterialToolbar toolbar = findViewById(R.id.toolbar);
-        setSupportActionBar(toolbar);
-        if (getSupportActionBar() != null) {
-            getSupportActionBar().setDisplayHomeAsUpEnabled(true);
-            getSupportActionBar().setDisplayShowTitleEnabled(false);
-        }
-        toolbar.setTitle(R.string.libraries_title);
-        toolbar.setSubtitle(appName);
-
         manager = TrackerAnalysisManager.getInstance(this);
-        ComposeView composeLibraries = findViewById(R.id.composeLibraries);
+        ComposeView composeLibraries = new ComposeView(this);
+        setContentView(composeLibraries);
         screenController = LibrariesScreen.install(
                 composeLibraries,
                 buildScreenModel(),
@@ -126,30 +117,16 @@ public class LibrariesActivity extends AppCompatActivity {
                     public void onWebsiteClick(String website) {
                         openTrackerWebsite(website);
                     }
-                });
+                },
+                getString(R.string.libraries_title),
+                appName,
+                this::finish);
 
         showCachedResult();
         loadTrackerWebsites();
 
         manager.getWorkInfoByPackageLiveData(appPackageName)
                 .observe(this, this::onWorkInfoChanged);
-
-        AppBarLayout appBar = findViewById(R.id.appbar);
-        final int appBarInitialTop = appBar.getPaddingTop();
-        ViewCompat.setOnApplyWindowInsetsListener(appBar, (v, insets) -> {
-            Insets sysBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            v.setPadding(v.getPaddingLeft(), appBarInitialTop + sysBars.top,
-                    v.getPaddingRight(), v.getPaddingBottom());
-            return insets;
-        });
-
-        final int composeInitialBottom = composeLibraries.getPaddingBottom();
-        ViewCompat.setOnApplyWindowInsetsListener(composeLibraries, (v, insets) -> {
-            Insets sysBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            v.setPadding(v.getPaddingLeft(), v.getPaddingTop(), v.getPaddingRight(),
-                    composeInitialBottom + sysBars.bottom);
-            return insets;
-        });
     }
 
     @Override

@@ -1,6 +1,7 @@
 package net.kollnig.missioncontrol;
 
 import android.content.ActivityNotFoundException;
+import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
@@ -27,6 +28,8 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.compose.ui.platform.ComposeView;
 
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+
+import net.kollnig.missioncontrol.ui.compose.TrackerControlThemeKt;
 import net.kollnig.missioncontrol.ui.compose.WireGuardProfileRow;
 import net.kollnig.missioncontrol.ui.compose.WireGuardProfilesScreen;
 import net.kollnig.missioncontrol.ui.compose.WireGuardProfilesScreenCallbacks;
@@ -79,9 +82,6 @@ public class ActivityWireGuardProfiles extends AppCompatActivity {
         composeView.setId(R.id.compose_wg_profiles);
         setContentView(composeView);
 
-        getSupportActionBar().setTitle(R.string.setting_wg_profile_manage);
-        getSupportActionBar().setDisplayHomeAsUpEnabled(true);
-
         manager = new WgProfileManager(this);
         manager.migrateIfNeeded();
 
@@ -102,6 +102,11 @@ public class ActivityWireGuardProfiles extends AppCompatActivity {
                 composeView,
                 buildScreenModel(),
                 new WireGuardProfilesScreenCallbacks() {
+                    @Override
+                    public void onNavigateUp() {
+                        finish();
+                    }
+
                     @Override
                     public void onAdd() {
                         showAddProfileChoice();
@@ -175,7 +180,7 @@ public class ActivityWireGuardProfiles extends AppCompatActivity {
     }
 
     private void showAddProfileChoice() {
-        new MaterialAlertDialogBuilder(this)
+        TrackerControlThemeKt.themedDialogBuilder(this)
                 .setItems(new CharSequence[]{
                         getString(R.string.setting_wg_profile_import_file),
                         getString(R.string.setting_wg_profile_import),
@@ -281,7 +286,7 @@ public class ActivityWireGuardProfiles extends AppCompatActivity {
     // clients. TrackerControl only guides users through that credential-free
     // route and imports the result as a regular custom profile.
     private void showProtonDialog() {
-        new MaterialAlertDialogBuilder(this)
+        TrackerControlThemeKt.themedDialogBuilder(this)
                 .setTitle(R.string.setting_wg_proton_setup)
                 .setMessage(R.string.msg_wg_proton_note)
                 .setNegativeButton(android.R.string.cancel, null)
@@ -299,12 +304,13 @@ public class ActivityWireGuardProfiles extends AppCompatActivity {
     }
 
     private void showMullvadDialog() {
-        LinearLayout form = new LinearLayout(this);
+        Context dialogContext = TrackerControlThemeKt.wrapDynamicColorContext(this);
+        LinearLayout form = new LinearLayout(dialogContext);
         form.setOrientation(LinearLayout.VERTICAL);
         int pad = (int) (20 * getResources().getDisplayMetrics().density);
         form.setPadding(pad, pad / 2, pad, 0);
 
-        final EditText account = new EditText(this);
+        final EditText account = new EditText(dialogContext);
         account.setSingleLine(true);
         account.setHint(R.string.msg_wg_mullvad_account);
         account.setInputType(InputType.TYPE_CLASS_NUMBER);
@@ -313,25 +319,25 @@ public class ActivityWireGuardProfiles extends AppCompatActivity {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        final Spinner country = new Spinner(this);
+        final Spinner country = new Spinner(dialogContext);
         List<MullvadProfileGenerator.CountryOption> options = new ArrayList<>();
         options.add(new MullvadProfileGenerator.CountryOption("", getString(R.string.msg_wg_mullvad_recommended)));
         ArrayAdapter<MullvadProfileGenerator.CountryOption> countryAdapter = new ArrayAdapter<>(
-                this, android.R.layout.simple_spinner_item, options);
+                dialogContext, android.R.layout.simple_spinner_item, options);
         countryAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         country.setAdapter(countryAdapter);
         form.addView(country, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        TextView note = new TextView(this);
+        TextView note = new TextView(dialogContext);
         note.setText(R.string.msg_wg_mullvad_note);
         note.setPadding(0, pad / 2, 0, 0);
         form.addView(note, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        AlertDialog dialog = new MaterialAlertDialogBuilder(this)
+        AlertDialog dialog = new MaterialAlertDialogBuilder(dialogContext)
                 .setTitle(R.string.setting_wg_mullvad_setup)
                 .setView(form)
                 .setNegativeButton(android.R.string.cancel, null)
@@ -376,7 +382,7 @@ public class ActivityWireGuardProfiles extends AppCompatActivity {
     }
 
     private void generateMullvadProfile(String accountNumber, String countryCode) {
-        AlertDialog progress = new MaterialAlertDialogBuilder(this)
+        AlertDialog progress = TrackerControlThemeKt.themedDialogBuilder(this)
                 .setTitle(R.string.setting_wg_mullvad_setup)
                 .setMessage(R.string.msg_wg_mullvad_generating)
                 .setCancelable(false)
@@ -445,12 +451,13 @@ public class ActivityWireGuardProfiles extends AppCompatActivity {
     }
 
     private void showProfileDialog(WgProfileManager.Profile item, String prefillConfig) {
-        LinearLayout form = new LinearLayout(this);
+        Context dialogContext = TrackerControlThemeKt.wrapDynamicColorContext(this);
+        LinearLayout form = new LinearLayout(dialogContext);
         form.setOrientation(LinearLayout.VERTICAL);
         int pad = (int) (20 * getResources().getDisplayMetrics().density);
         form.setPadding(pad, pad / 2, pad, 0);
 
-        final EditText name = new EditText(this);
+        final EditText name = new EditText(dialogContext);
         name.setSingleLine(true);
         name.setHint(R.string.msg_wg_profile_name);
         name.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_WORDS);
@@ -460,7 +467,7 @@ public class ActivityWireGuardProfiles extends AppCompatActivity {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        final EditText config = new EditText(this);
+        final EditText config = new EditText(dialogContext);
         config.setMinLines(10);
         config.setGravity(android.view.Gravity.TOP | android.view.Gravity.START);
         config.setHint(R.string.msg_wg_profile_config_hint);
@@ -474,10 +481,10 @@ public class ActivityWireGuardProfiles extends AppCompatActivity {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        ScrollView scroll = new ScrollView(this);
+        ScrollView scroll = new ScrollView(dialogContext);
         scroll.addView(form);
 
-        MaterialAlertDialogBuilder builder = new MaterialAlertDialogBuilder(this)
+        MaterialAlertDialogBuilder builder = new MaterialAlertDialogBuilder(dialogContext)
                 .setTitle(item == null ? R.string.setting_wg_profile_save : R.string.setting_wg_profile)
                 .setView(scroll)
                 .setNegativeButton(android.R.string.cancel, null)
@@ -528,7 +535,7 @@ public class ActivityWireGuardProfiles extends AppCompatActivity {
     }
 
     private void confirmDelete(WgProfileManager.Profile item) {
-        new MaterialAlertDialogBuilder(this)
+        TrackerControlThemeKt.themedDialogBuilder(this)
                 .setTitle(R.string.setting_wg_profile_delete)
                 .setMessage(R.string.msg_wg_profile_delete_confirm)
                 .setPositiveButton(android.R.string.yes, (dialog, which) -> {

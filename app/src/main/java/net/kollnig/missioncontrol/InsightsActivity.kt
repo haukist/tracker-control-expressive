@@ -69,12 +69,6 @@ class InsightsActivity : AppCompatActivity() {
         composeView.id = R.id.compose_insights
         setContentView(composeView)
 
-        // Set up action bar
-        supportActionBar?.apply {
-            setDisplayHomeAsUpEnabled(true)
-            setTitle(R.string.insights_title)
-        }
-
         screenController = InsightsScreen.install(
             composeView = composeView,
             initialModel = InsightsScreenModel.loading(),
@@ -83,6 +77,10 @@ class InsightsActivity : AppCompatActivity() {
                     if (!isDestroyed && !isFinishing) {
                         shareInsights()
                     }
+                }
+
+                override fun onNavigateUp() {
+                    finish()
                 }
             }
         )

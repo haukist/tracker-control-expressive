@@ -18,18 +18,22 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.MutableState
@@ -126,6 +130,7 @@ data class InsightsScreenModel(
 /** Callback boundary for actions whose implementation remains in InsightsActivity. */
 interface InsightsScreenCallbacks {
     fun onShare()
+    fun onNavigateUp() {}
 }
 
 /** Handle used by the Activity to update Compose without moving loading state or lifecycle logic. */
@@ -158,21 +163,36 @@ object InsightsScreen {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun InsightsScreenContent(
     model: InsightsScreenModel,
     callbacks: InsightsScreenCallbacks
 ) {
-    Box(
+    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+    Scaffold(
         modifier = Modifier
             .fillMaxSize()
-            .navigationBarsPadding()
-            .background(MaterialTheme.colorScheme.background)
-    ) {
-        when (val state = model.state) {
-            InsightsUiState.Loading -> LoadingContent()
-            InsightsUiState.Empty -> EmptyContent()
-            is InsightsUiState.Populated -> PopulatedContent(state.data, callbacks)
+            .nestedScroll(scrollBehavior.nestedScrollConnection),
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            ExpressiveMediumTopAppBar(
+                title = stringResource(R.string.insights_title),
+                onNavigateUp = callbacks::onNavigateUp,
+                scrollBehavior = scrollBehavior
+            )
+        }
+    ) { innerPadding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) {
+            when (val state = model.state) {
+                InsightsUiState.Loading -> LoadingContent()
+                InsightsUiState.Empty -> EmptyContent()
+                is InsightsUiState.Populated -> PopulatedContent(state.data, callbacks)
+            }
         }
     }
 }
@@ -184,7 +204,10 @@ private fun LoadingContent() {
             .fillMaxSize(),
         contentAlignment = Alignment.Center
     ) {
-        CircularProgressIndicator(modifier = Modifier.testTag("insights-loading"))
+        ExpressiveLoadingIndicator(
+            contained = true,
+            modifier = Modifier.testTag("insights-loading")
+        )
     }
 }
 
@@ -237,26 +260,26 @@ private fun PopulatedContent(
             )
         }
         item(key = "pervasive-heading") {
-            DetailsSectionHeading(text = stringResource(R.string.insights_pervasive_trackers))
+            ExpressiveSectionLabel(text = stringResource(R.string.insights_pervasive_trackers))
         }
         item(key = "pervasive-list") {
             InsightsListCard(
                 items = data.pervasiveTrackers,
                 showAsAppCount = true,
                 progressColor = MaterialTheme.colorScheme.primary,
-                progressTrackColor = MaterialTheme.colorScheme.surfaceVariant,
+                progressTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
                 modifier = Modifier.padding(horizontal = 16.dp)
             )
         }
         item(key = "domains-heading") {
-            DetailsSectionHeading(text = stringResource(R.string.insights_top_domains))
+            ExpressiveSectionLabel(text = stringResource(R.string.insights_top_domains))
         }
         item(key = "domains-list") {
             InsightsListCard(
                 items = data.topDomains,
                 showAsAppCount = true,
-                progressColor = MaterialTheme.colorScheme.primary,
-                progressTrackColor = MaterialTheme.colorScheme.surfaceVariant,
+                progressColor = MaterialTheme.colorScheme.tertiary,
+                progressTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
                 modifier = Modifier.padding(horizontal = 16.dp)
             )
         }
@@ -293,16 +316,18 @@ private fun InsightsOverviewCard(
         modifier = modifier
             .fillMaxWidth()
             .testTag("insights-hero"),
-        shape = RoundedCornerShape(24.dp),
+        shape = RoundedCornerShape(28.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
             contentColor = MaterialTheme.colorScheme.onSurface
         )
     ) {
+        // Top padding compensates for the 48.dp IconButton's 12.dp internal inset so
+        // the visual top, bottom, and side margins all stay 20.dp.
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(20.dp)
+                .heroCardPadding(20.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -324,13 +349,16 @@ private fun InsightsOverviewCard(
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 // No size() here: IconButton's own 48dp minimum touch target
-                // must survive; the glyph is sized on the Icon instead.
+                // must survive; the glyph is sized on the Icon instead, and
+                // offset aligns its right edge with the 20.dp content margin.
                 IconButton(
                     onClick = onShare,
-                    modifier = Modifier.testTag("insights-share")
+                    modifier = Modifier
+                        .offset(x = HeroShareButtonInset)
+                        .testTag("insights-share")
                 ) {
                     Icon(
-                        painter = painterResource(R.drawable.ic_ios_share),
+                        painter = painterResource(R.drawable.ic_share),
                         contentDescription = stringResource(R.string.insights_share),
                         modifier = Modifier.size(24.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
@@ -340,7 +368,7 @@ private fun InsightsOverviewCard(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 16.dp),
+                    .padding(top = 4.dp),
                 verticalAlignment = Alignment.Bottom
             ) {
                 Column(modifier = Modifier.weight(1f)) {
@@ -412,10 +440,10 @@ private fun InsightsReachCard(
             .fillMaxWidth()
             .testTag("insights-reach-card"),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface,
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
             contentColor = MaterialTheme.colorScheme.onSurface
         ),
-        shape = RoundedCornerShape(20.dp)
+        shape = RoundedCornerShape(24.dp)
     ) {
         Row(
             modifier = Modifier
@@ -488,35 +516,33 @@ private fun InsightsListCard(
     progressTrackColor: Color,
     modifier: Modifier = Modifier
 ) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
-        shape = RoundedCornerShape(16.dp)
-    ) {
-        if (items.isEmpty()) {
+    if (items.isEmpty()) {
+        Card(
+            modifier = modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+            ),
+            shape = RoundedCornerShape(24.dp)
+        ) {
             Text(
                 text = stringResource(R.string.none),
                 modifier = Modifier.padding(16.dp),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-        } else {
-            val maxCount = items.maxOf { it.count }.coerceAtLeast(1)
-            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
-                items.forEachIndexed { index, item ->
-                    InsightListRow(
-                        item = item,
-                        maxCount = maxCount,
-                        showAsAppCount = showAsAppCount,
-                        progressColor = progressColor,
-                        progressTrackColor = progressTrackColor
-                    )
-                    if (index < items.lastIndex) {
-                        HorizontalDivider(
-                            modifier = Modifier.padding(vertical = 4.dp),
-                            color = MaterialTheme.colorScheme.outlineVariant
+        }
+    } else {
+        val maxCount = items.maxOf { it.count }.coerceAtLeast(1)
+        ExpressiveGroupedColumn(modifier = modifier) {
+            items.forEachIndexed { index, item ->
+                ExpressiveGroupedSurface(index = index, count = items.size) {
+                    Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                        InsightListRow(
+                            item = item,
+                            maxCount = maxCount,
+                            showAsAppCount = showAsAppCount,
+                            progressColor = progressColor,
+                            progressTrackColor = progressTrackColor
                         )
                     }
                 }

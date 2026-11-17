@@ -6,11 +6,9 @@ import android.content.SharedPreferences;
 
 import androidx.fragment.app.FragmentActivity;
 import androidx.preference.PreferenceManager;
-import androidx.recyclerview.widget.RecyclerView;
-
-import com.google.android.material.materialswitch.MaterialSwitch;
 
 import net.kollnig.missioncontrol.R;
+import net.kollnig.missioncontrol.ui.compose.VpnScreenController;
 import net.kollnig.missioncontrol.wg.IvpnProfileGenerator;
 import net.kollnig.missioncontrol.wg.MullvadProfileGenerator;
 import net.kollnig.missioncontrol.wg.WgProfileManager;
@@ -27,6 +25,7 @@ import org.robolectric.android.controller.ActivityController;
 import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowToast;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.Map;
 
@@ -59,20 +58,19 @@ public class VpnEgressConflictTest {
     }
 
     @Test
-    public void dashboardRejectsWireGuardWithoutChangingPrefsOrReloadingVpn() {
+    public void dashboardRejectsWireGuardWithoutChangingPrefsOrReloadingVpn() throws Exception {
         prefs.edit().putBoolean("ts_enabled", true).commit();
         Map<String, ?> before = prefs.getAll();
-        MaterialSwitch toggle = dashboardSwitch();
-        toggle.setChecked(true);
-        assertFalse(toggle.isChecked());
+        invoke("toggleVpnEnabled", boolean.class, true);
+        assertFalse(isVpnEnabled());
         assertEquals(before, prefs.getAll());
         assertNull(Shadows.shadowOf(RuntimeEnvironment.getApplication()).getNextStartedService());
         assertEquals(host.get().getString(R.string.msg_ts_exclusive), ShadowToast.getTextOfLatestToast());
     }
 
     @Test
-    public void dashboardStillEnablesWireGuardWhenTailscaleIsOff() {
-        dashboardSwitch().setChecked(true);
+    public void dashboardStillEnablesWireGuardWhenTailscaleIsOff() throws Exception {
+        invoke("toggleVpnEnabled", boolean.class, true);
         assertTrue(prefs.getBoolean("wg_enabled", false));
         assertNotNull(Shadows.shadowOf(RuntimeEnvironment.getApplication()).getNextStartedService());
     }
@@ -117,13 +115,11 @@ public class VpnEgressConflictTest {
         assertNull(Shadows.shadowOf(RuntimeEnvironment.getApplication()).getNextStartedService());
     }
 
-    @SuppressWarnings({"rawtypes", "unchecked"})
-    private MaterialSwitch dashboardSwitch() {
-        RecyclerView list = fragment.requireView().findViewById(R.id.vpnList);
-        RecyclerView.Adapter adapter = list.getAdapter();
-        RecyclerView.ViewHolder holder = adapter.createViewHolder(list, 0);
-        adapter.bindViewHolder(holder, 0);
-        return holder.itemView.findViewById(R.id.vpnEnabledSwitch);
+    private boolean isVpnEnabled() throws Exception {
+        Field field = VpnFragment.class.getDeclaredField("screenController");
+        field.setAccessible(true);
+        VpnScreenController controller = (VpnScreenController) field.get(fragment);
+        return controller.getModel().isEnabled();
     }
 
     private void invoke(String name, Class<?> type, Object value) throws Exception {

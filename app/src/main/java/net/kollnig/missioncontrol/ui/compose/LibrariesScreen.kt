@@ -99,7 +99,10 @@ object LibrariesScreen {
     fun install(
         composeView: ComposeView,
         initialModel: LibrariesScreenModel,
-        callbacks: LibrariesScreenCallbacks
+        callbacks: LibrariesScreenCallbacks,
+        title: String,
+        subtitle: String,
+        onNavigateUp: Runnable
     ): LibrariesScreenController {
         val state = mutableStateOf(initialModel)
         composeView.setViewCompositionStrategy(
@@ -107,23 +110,46 @@ object LibrariesScreen {
         )
         composeView.setContent {
             TrackerControlTheme {
-                LibrariesScreenContent(state.value, callbacks)
+                LibrariesScreenContent(
+                    model = state.value,
+                    callbacks = callbacks,
+                    title = title,
+                    subtitle = subtitle,
+                    onNavigateUp = { onNavigateUp.run() }
+                )
             }
         }
         return LibrariesScreenController(state)
     }
 }
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 internal fun LibrariesScreenContent(
     model: LibrariesScreenModel,
-    callbacks: LibrariesScreenCallbacks
+    callbacks: LibrariesScreenCallbacks,
+    title: String = "",
+    subtitle: String = "",
+    onNavigateUp: () -> Unit = {}
 ) {
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-    ) {
+    androidx.compose.material3.Scaffold(
+        topBar = {
+            if (title.isNotEmpty()) {
+                ExpressiveTopAppBar(
+                    title = title,
+                    subtitle = subtitle.takeIf { it.isNotEmpty() },
+                    onNavigateUp = onNavigateUp
+                )
+            }
+        },
+        containerColor = MaterialTheme.colorScheme.background
+    ) { innerPadding ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .background(MaterialTheme.colorScheme.background)
+        ) {
         item(key = "explanation") {
             Text(
                 text = model.explanation,
@@ -156,11 +182,10 @@ internal fun LibrariesScreenContent(
                         )
                         if (model.metadataLoading) {
                             Spacer(modifier = Modifier.width(8.dp))
-                            CircularProgressIndicator(
+                            ExpressiveLoadingIndicator(
                                 modifier = Modifier
-                                    .size(16.dp)
-                                    .testTag("libraries-metadata-loading"),
-                                strokeWidth = 2.dp
+                                    .size(20.dp)
+                                    .testTag("libraries-metadata-loading")
                             )
                         }
                     }
@@ -257,6 +282,7 @@ internal fun LibrariesScreenContent(
                 Text(text = model.actionText)
             }
         }
+    }
     }
 }
 

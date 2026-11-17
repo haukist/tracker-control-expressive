@@ -70,7 +70,6 @@ public class TrackersFragment extends Fragment {
     private ComposeView composeTrackers;
     private TrackersScreenController screenController;
     private List<TrackerCategory> categories = new ArrayList<>();
-    private final Set<String> expandedCompanyKeys = new HashSet<>();
     private final Set<String> expandedSections = new HashSet<>();
     private final Map<String, Tracker> trackersByKey = new HashMap<>();
     @Nullable
@@ -152,13 +151,8 @@ public class TrackersFragment extends Fragment {
                     }
 
                     @Override
-                    public void onCompanyClick(String blockingKey) {
-                        toggleCompanyExpansion(blockingKey);
-                    }
-
-                    @Override
-                    public void onCompanyToggle(String blockingKey, boolean checked) {
-                        toggleCompany(blockingKey, checked);
+                    public void onCompanyBlockChanged(String blockingKey, boolean blocked) {
+                        setCompanyBlocked(blockingKey, blocked);
                     }
 
                     @Override
@@ -327,7 +321,7 @@ public class TrackersFragment extends Fragment {
         Context context = getContext();
         if (context == null)
             return new TrackersScreenModel(
-                    false, "", null, "", false, "", new ArrayList<>(), refreshing);
+                    false, "", null, "", false, "", new ArrayList<>(), refreshing, null, null, null);
 
         InternetBlocklist internet = InternetBlocklist.getInstance(context);
         TrackerBlocklist blocklist = TrackerBlocklist.getInstance(context);
@@ -358,37 +352,79 @@ public class TrackersFragment extends Fragment {
         // memoised across renders, since toggles change it), rather than being
         // re-queried per row that references the same category.
         Map<String, Boolean> categoryBlockedByName = new HashMap<>();
-        for (TrackerCategory category : categories)
-            categoryBlockedByName.put(category.getCategoryName(),
-                    blocklist.blocked(mAppUid, category.getCategoryName()));
+        Map<String, String> categoryDisplayByName = new HashMap<>();
+        Map<String, Boolean> hiddenBlockedByCategory = new HashMap<>();
+        Map<String, Boolean> hiddenAllowedByCategory = new HashMap<>();
+        int totalCompanyCount = 0;
+        int totalBlockedCount = 0;
+        int totalAllowedCount = 0;
+        for (TrackerCategory category : categories) {
+            String categoryName = category.getCategoryName();
+            boolean categoryBlocked = blocklist.blocked(mAppUid, categoryName);
+            categoryBlockedByName.put(categoryName, categoryBlocked);
+            categoryDisplayByName.put(categoryName, category.getDisplayName(context));
+
+            List<Tracker> children = category.getChildren();
+            boolean collapsed = !expandedSections.contains(categoryName)
+                    && children.size() > TrackerFeedLogic.COLLAPSED_COMPANY_ROWS + 1;
+            boolean hasBlockedHidden = false;
+            boolean hasAllowedHidden = false;
+            for (int index = 0; index < children.size(); index++) {
+                TrackerStatusLogic.Result status = resolveTrackerStatus(
+                        blocklist,
+                        state,
+                        trackerProtectionEnabled,
+                        minimal,
+                        strict,
+                        categoryBlocked,
+                        children.get(index));
+                totalCompanyCount++;
+                if (status.getStatus() == TrackerStatusLogic.Status.BLOCKED) {
+                    totalBlockedCount++;
+                    if (collapsed && index >= TrackerFeedLogic.COLLAPSED_COMPANY_ROWS) {
+                        hasBlockedHidden = true;
+                    }
+                } else {
+                    totalAllowedCount++;
+                    if (collapsed && index >= TrackerFeedLogic.COLLAPSED_COMPANY_ROWS) {
+                        hasAllowedHidden = true;
+                    }
+                }
+            }
+            hiddenBlockedByCategory.put(categoryName, hasBlockedHidden);
+            hiddenAllowedByCategory.put(categoryName, hasAllowedHidden);
+        }
 
         List<TrackersRow> rows = new ArrayList<>();
         List<Object> feedRows = TrackerFeedLogic.buildRows(
-                categories, expandedCompanyKeys, expandedSections);
+                categories, Collections.emptySet(), expandedSections);
         for (int index = 0; index < feedRows.size(); index++) {
             Object feedRow = feedRows.get(index);
             if (feedRow instanceof TrackerFeedLogic.SectionRow) {
                 TrackerCategory category = ((TrackerFeedLogic.SectionRow) feedRow).getCategory();
-                boolean categoryBlocked = categoryBlockedByName.get(category.getCategoryName());
+                boolean categoryBlocked = Boolean.TRUE.equals(
+                        categoryBlockedByName.get(category.getCategoryName()));
                 rows.add(buildSectionRow(context, state,
                         trackerProtectionEnabled, minimal, category, categoryBlocked));
             } else if (feedRow instanceof TrackerFeedLogic.CompanyRow) {
                 TrackerFeedLogic.CompanyRow company = (TrackerFeedLogic.CompanyRow) feedRow;
-                Object nextRow = index + 1 < feedRows.size() ? feedRows.get(index + 1) : null;
-                boolean showDivider = nextRow instanceof TrackerFeedLogic.CompanyRow
-                        || nextRow instanceof TrackerFeedLogic.ShowMoreRow;
-                boolean categoryBlocked = categoryBlockedByName.get(company.getCategoryName());
+                boolean categoryBlocked = Boolean.TRUE.equals(
+                        categoryBlockedByName.get(company.getCategoryName()));
+                String categoryDisplayName = categoryDisplayByName.get(company.getCategoryName());
                 rows.add(buildCompanyRow(context, blocklist, state,
                         trackerProtectionEnabled, minimal, strict, internetBlocked,
-                        company, showDivider, categoryBlocked));
+                        company, categoryBlocked, categoryDisplayName));
             } else if (feedRow instanceof TrackerFeedLogic.ShowMoreRow) {
                 TrackerFeedLogic.ShowMoreRow showMore = (TrackerFeedLogic.ShowMoreRow) feedRow;
+                String categoryName = showMore.getCategoryName();
                 rows.add(new TrackersRow.ShowMore(
-                        "more:" + showMore.getCategoryName(),
+                        "more:" + categoryName,
                         context.getResources().getQuantityString(
                                 R.plurals.feed_show_more_companies,
                                 showMore.getHiddenCount(), showMore.getHiddenCount()),
-                        showMore.getCategoryName()));
+                        categoryName,
+                        Boolean.TRUE.equals(hiddenBlockedByCategory.get(categoryName)),
+                        Boolean.TRUE.equals(hiddenAllowedByCategory.get(categoryName))));
             }
         }
 
@@ -406,7 +442,32 @@ public class TrackersFragment extends Fragment {
                 hintAccent,
                 librarySummary(context),
                 Collections.unmodifiableList(rows),
-                refreshing);
+                refreshing,
+                totalCompanyCount,
+                totalBlockedCount,
+                totalAllowedCount);
+    }
+
+    private TrackerStatusLogic.Result resolveTrackerStatus(
+            TrackerBlocklist blocklist,
+            AppProtectionState state,
+            boolean trackerProtectionEnabled,
+            boolean minimal,
+            boolean strict,
+            boolean categoryBlocked,
+            Tracker tracker) {
+        String blockingKey = TrackerBlocklist.getBlockingKey(tracker);
+        boolean companyKeyBlocked = blocklist.blocked(mAppUid, blockingKey);
+        return TrackerStatusLogic.resolve(
+                trackerProtectionEnabled,
+                minimal,
+                strict,
+                state,
+                TrackerList.isMinimallyBlocked(tracker),
+                TrackerList.isMinimallyKnown(tracker),
+                categoryBlocked,
+                companyKeyBlocked,
+                tracker.isAllowedInStandardMode());
     }
 
     private TrackersRow.Section buildSectionRow(Context context,
@@ -463,72 +524,56 @@ public class TrackersFragment extends Fragment {
             boolean strict,
             boolean internetBlocked,
             TrackerFeedLogic.CompanyRow row,
-            boolean showDivider,
-            boolean categoryBlocked) {
+            boolean categoryBlocked,
+            @Nullable String categoryDisplayName) {
         Tracker tracker = row.getTracker();
         String categoryName = row.getCategoryName();
         String blockingKey = TrackerBlocklist.getBlockingKey(tracker);
-        boolean companyKeyBlocked = blocklist.blocked(mAppUid, blockingKey);
-        TrackerStatusLogic.Result status = TrackerStatusLogic.resolve(
-                trackerProtectionEnabled,
-                minimal,
-                strict,
-                state,
-                TrackerList.isMinimallyBlocked(tracker),
-                TrackerList.isMinimallyKnown(tracker),
-                categoryBlocked,
-                companyKeyBlocked,
-                tracker.isAllowedInStandardMode());
+        TrackerStatusLogic.Result status = resolveTrackerStatus(
+                blocklist, state, trackerProtectionEnabled, minimal, strict,
+                categoryBlocked, tracker);
         String companyName = tracker.getName();
         if (TrackerList.TRACKER_HOSTLIST.equals(companyName))
             companyName = context.getString(R.string.tracker_hostlist);
         String lastSeen = tracker.lastSeen != null && tracker.lastSeen != 0
                 ? Util.relativeTime(tracker.lastSeen).toString() : null;
-        String sharedIpNote = null;
-        boolean showAllowSwitch = row.isExpanded();
-        if (row.isExpanded()) {
-            if (status.getStatus() == TrackerStatusLogic.Status.ALLOWED_SHARED_IP) {
-                sharedIpNote = context.getString(R.string.allowed_shared_ip);
-                showAllowSwitch = false;
-            } else if (status.getStatus() == TrackerStatusLogic.Status.MONITORED) {
-                sharedIpNote = context.getString(R.string.tracker_monitored_minimal);
-            } else if (status.getStatus() == TrackerStatusLogic.Status.ALLOWED
-                    && state == AppProtectionState.PROTECTED && !categoryBlocked) {
-                sharedIpNote = context.getString(R.string.category_unblocked_warning);
-            }
+        boolean blockSwitchEnabled = status.getInteractivity() == TrackerStatusLogic.Interactivity.TOGGLEABLE
+                && state == AppProtectionState.PROTECTED
+                && categoryBlocked
+                && !internetBlocked;
+        boolean statusBlocked = status.getStatus() == TrackerStatusLogic.Status.BLOCKED;
+        String statusNote = null;
+        boolean showAllowSwitch = true;
+        if (status.getStatus() == TrackerStatusLogic.Status.ALLOWED_SHARED_IP) {
+            statusNote = context.getString(R.string.allowed_shared_ip);
+            showAllowSwitch = false;
+        } else if (status.getStatus() == TrackerStatusLogic.Status.MONITORED) {
+            statusNote = context.getString(R.string.tracker_monitored_minimal);
+        } else if (status.getStatus() == TrackerStatusLogic.Status.ALLOWED
+                && state == AppProtectionState.PROTECTED && !categoryBlocked) {
+            statusNote = context.getString(R.string.category_unblocked_warning);
+        } else if (statusBlocked && blockSwitchEnabled
+                && categoryDisplayName != null && !categoryDisplayName.isEmpty()) {
+            statusNote = context.getString(R.string.feed_blocked_with_category, categoryDisplayName);
         }
         String displayName = tracker.getName();
         if (TrackerList.TRACKER_HOSTLIST.equals(displayName))
             displayName = context.getString(R.string.tracker_hostlist);
-        boolean allowEnabled = status.getInteractivity() == TrackerStatusLogic.Interactivity.TOGGLEABLE
-                && state == AppProtectionState.PROTECTED
-                && categoryBlocked
-                && !internetBlocked;
-        String hosts = "";
-        if (row.isExpanded()) {
-            List<String> sortedHosts = new ArrayList<>(tracker.getHosts());
-            Collections.sort(sortedHosts);
-            hosts = TextUtils.join("\n", sortedHosts);
-        }
         return new TrackersRow.Company(
                 "company:" + categoryName + ":" + blockingKey,
+                categoryName,
                 blockingKey,
                 companyName,
                 lastSeen,
                 context.getString(statusString(status.getStatus())),
-                status.getStatus() == TrackerStatusLogic.Status.BLOCKED,
-                row.isExpanded(),
-                hosts,
-                row.isExpanded() && tracker.isUncertain(),
+                statusBlocked,
+                Collections.unmodifiableList(new ArrayList<>(tracker.getHosts())),
+                tracker.isUncertain(),
                 showAllowSwitch,
-                String.format(context.getString(R.string.feed_allow_company_in_app), displayName,
-                        mAppName),
-                status.getStatus() != TrackerStatusLogic.Status.BLOCKED,
-                allowEnabled,
-                sharedIpNote,
-                showDivider,
-                context.getString(R.string.feed_company_expanded),
-                context.getString(R.string.feed_company_collapsed));
+                context.getString(R.string.feed_block_company_in_app, displayName, mAppName),
+                statusBlocked,
+                blockSwitchEnabled,
+                statusNote);
     }
 
     private void toggleSection(String categoryName, boolean checked) {
@@ -545,24 +590,16 @@ public class TrackersFragment extends Fragment {
         render();
     }
 
-    private void toggleCompanyExpansion(String blockingKey) {
-        if (expandedCompanyKeys.contains(blockingKey))
-            expandedCompanyKeys.remove(blockingKey);
-        else
-            expandedCompanyKeys.add(blockingKey);
-        render();
-    }
-
-    private void toggleCompany(String blockingKey, boolean checked) {
+    private void setCompanyBlocked(String blockingKey, boolean blocked) {
         Context context = getContext();
         Tracker tracker = trackersByKey.get(blockingKey);
         if (context == null || tracker == null)
             return;
         TrackerBlocklist blocklist = TrackerBlocklist.getInstance(context);
-        if (checked)
-            blocklist.unblock(mAppUid, tracker);
-        else
+        if (blocked)
             blocklist.block(mAppUid, tracker);
+        else
+            blocklist.unblock(mAppUid, tracker);
         render();
     }
 
@@ -689,7 +726,6 @@ public class TrackersFragment extends Fragment {
         composeTrackers = null;
         screenController = null;
         categories = new ArrayList<>();
-        expandedCompanyKeys.clear();
         expandedSections.clear();
         analysisWork = null;
         trackersByKey.clear();

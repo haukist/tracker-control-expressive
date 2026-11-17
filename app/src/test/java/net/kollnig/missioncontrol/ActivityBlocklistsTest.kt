@@ -5,6 +5,11 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
 import androidx.appcompat.app.AlertDialog
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.junit4.createEmptyComposeRule
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
 import androidx.preference.PreferenceManager
 import androidx.test.core.app.ApplicationProvider
 import androidx.work.Configuration
@@ -17,6 +22,7 @@ import net.kollnig.missioncontrol.data.BlocklistManager
 import net.kollnig.missioncontrol.ui.compose.BlocklistsScreenModel
 import org.junit.Assert.*
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
@@ -27,6 +33,9 @@ import org.robolectric.shadows.ShadowDialog
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class ActivityBlocklistsTest {
+    @get:Rule
+    val composeRule = createEmptyComposeRule()
+
     private val context get() = ApplicationProvider.getApplicationContext<Context>()
 
     @Before fun setupWork() {
@@ -78,25 +87,19 @@ class ActivityBlocklistsTest {
 
     @Test fun settingsExposeBlocklistsOnlyOutsidePlayIncludingAdvancedSubscreen() {
         val controller = Robolectric.buildActivity(eu.faircode.netguard.ActivitySettings::class.java).setup()
-        val activity = controller.get()
-        fun screen(): androidx.preference.PreferenceScreen {
-            activity.supportFragmentManager.executePendingTransactions()
-            return (activity.supportFragmentManager.findFragmentById(R.id.settings_container)
-                as androidx.preference.PreferenceFragmentCompat).preferenceScreen
-        }
         fun checkControls() {
-            for (key in listOf("manage_blocklists", "hosts_download", "hosts_auto_update")) {
-                val preference = screen().findPreference<androidx.preference.Preference>(key)
-                if (BlockingMode.isPlayStoreBuild()) assertNull(key, preference)
-                else assertNotNull(key, preference)
+            for (key in listOf("pref_manage_blocklists", "pref_hosts_download", "pref_hosts_auto_update")) {
+                if (BlockingMode.isPlayStoreBuild()) {
+                    composeRule.onNodeWithTag(key).assertDoesNotExist()
+                } else {
+                    composeRule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag(key))
+                    composeRule.onNodeWithTag(key).assertExists()
+                }
             }
         }
-        checkControls()
-        val advanced = screen().findPreference<androidx.preference.PreferenceScreen>("screen_advanced_options")!!
-        val fragment = activity.supportFragmentManager.findFragmentById(R.id.settings_container)
-            as androidx.preference.PreferenceFragmentCompat
-        activity.onPreferenceStartScreen(fragment, advanced)
-        activity.supportFragmentManager.executePendingTransactions()
+        composeRule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("pref_screen_advanced_options"))
+        composeRule.onNodeWithTag("pref_screen_advanced_options").performClick()
+        composeRule.waitForIdle()
         checkControls()
         controller.pause().stop().destroy()
     }

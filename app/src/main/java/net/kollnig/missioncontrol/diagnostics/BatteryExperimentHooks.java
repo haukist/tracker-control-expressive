@@ -29,6 +29,34 @@ public final class BatteryExperimentHooks {
         }
     }
 
+    public static boolean isAvailable() {
+        return BuildConfig.BATTERY_EXPERIMENT_ENABLED;
+    }
+
+    public static String getTitle(Context context) {
+        if (!BuildConfig.BATTERY_EXPERIMENT_ENABLED) return null;
+        try {
+            Object value = Class.forName("net.kollnig.missioncontrol.diagnostics.BatteryExperimentController")
+                    .getMethod("getTitle", Context.class)
+                    .invoke(null, context);
+            return value instanceof String ? (String) value : null;
+        } catch (ReflectiveOperationException ex) {
+            Log.w("BatteryExperiment", "Battery experiment title unavailable", ex);
+            return null;
+        }
+    }
+
+    public static void openActivity(Context context) {
+        if (!BuildConfig.BATTERY_EXPERIMENT_ENABLED) return;
+        try {
+            Class.forName("net.kollnig.missioncontrol.diagnostics.BatteryExperimentController")
+                    .getMethod("openActivity", Context.class)
+                    .invoke(null, context);
+        } catch (ReflectiveOperationException ex) {
+            Log.w("BatteryExperiment", "Battery experiment activity unavailable", ex);
+        }
+    }
+
     public static void configurePreference(AppCompatActivity activity, PreferenceScreen screen) {
         if (!BuildConfig.BATTERY_EXPERIMENT_ENABLED) return;
         try {

@@ -54,17 +54,18 @@ public class ActivityScanQr extends AppCompatActivity {
     private final AtomicBoolean delivered = new AtomicBoolean(false);
 
     private ActivityResultLauncher<String> permissionLauncher;
+    private PreviewView previewView;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         Util.setTheme(this);
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_scan_qr);
-
-        if (getSupportActionBar() != null) {
-            getSupportActionBar().setTitle(R.string.setting_wg_profile_scan);
-            getSupportActionBar().setDisplayHomeAsUpEnabled(true);
-        }
+        previewView = new PreviewView(this);
+        androidx.compose.ui.platform.ComposeView composeView =
+                new androidx.compose.ui.platform.ComposeView(this);
+        setContentView(composeView);
+        net.kollnig.missioncontrol.ui.compose.ScanQrScreen.install(
+                composeView, previewView, this::finish);
 
         permissionLauncher = registerForActivityResult(
                 new ActivityResultContracts.RequestPermission(), granted -> {
@@ -100,7 +101,6 @@ public class ActivityScanQr extends AppCompatActivity {
     }
 
     private void startCamera() {
-        PreviewView previewView = findViewById(R.id.scan_preview);
         ListenableFuture<ProcessCameraProvider> future = ProcessCameraProvider.getInstance(this);
         future.addListener(() -> {
             try {

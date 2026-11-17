@@ -23,12 +23,16 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import net.kollnig.missioncontrol.R
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.text.NumberFormat
+import kotlin.math.abs
 
 @RunWith(AndroidJUnit4::class)
 class TimelineScreenTest {
@@ -128,13 +132,21 @@ class TimelineScreenTest {
         composeRule.onAllNodes(hasTestTag("timeline-divider"), useUnmergedTree = true)
             .assertCountEquals(1)
         val rootBounds = composeRule.onRoot(useUnmergedTree = true).getUnclippedBoundsInRoot()
+        val firstRowBounds = composeRule
+            .onNodeWithTag("timeline-app-10001")
+            .getUnclippedBoundsInRoot()
+        val secondRowBounds = composeRule
+            .onNodeWithTag("timeline-app-10002")
+            .getUnclippedBoundsInRoot()
         val dividerBounds = composeRule
             .onNodeWithTag("timeline-divider", useUnmergedTree = true)
             .getUnclippedBoundsInRoot()
-        assertEquals(
+        assertDpClose(
             dividerBounds.left - rootBounds.left,
             rootBounds.right - dividerBounds.right
         )
+        assertDpClose(firstRowBounds.bottom, dividerBounds.top)
+        assertDpClose(dividerBounds.bottom, secondRowBounds.top)
         composeRule.runOnIdle {
             assertEquals(1, callbacks.dismissHint)
             assertEquals(1, callbacks.entryClicks)
@@ -185,6 +197,13 @@ class TimelineScreenTest {
             emptyState = null,
             showHint = showHint,
             rows = listOf(TimelineRow.Section(section, "Today"), known, unknown)
+        )
+    }
+
+    private fun assertDpClose(expected: Dp, actual: Dp, tolerance: Dp = 0.5.dp) {
+        assertTrue(
+            "Expected $expected ± $tolerance, got $actual",
+            abs((expected - actual).value) <= tolerance.value
         )
     }
 

@@ -20,16 +20,21 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.MutableState
@@ -72,6 +77,7 @@ data class BlocklistsScreenModel @JvmOverloads constructor(
 
 /** Callback boundary for persistence and dialogs owned by ActivityBlocklists. */
 interface BlocklistsScreenCallbacks {
+    fun onNavigateUp() {}
     fun onAdd()
     fun onEdit(uuid: String)
     fun onEnabledChanged(uuid: String, enabled: Boolean)
@@ -109,26 +115,32 @@ object BlocklistsScreen {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun BlocklistsScreenContent(
     model: BlocklistsScreenModel,
     callbacks: BlocklistsScreenCallbacks
 ) {
     Scaffold(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
+        modifier = Modifier.fillMaxSize(),
+        containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets.safeDrawing,
+        topBar = {
+            ExpressiveTopAppBar(
+                title = stringResource(R.string.title_blocklists),
+                onNavigateUp = callbacks::onNavigateUp
+            )
+        },
         floatingActionButton = {
             FloatingActionButton(
                 onClick = { if (!model.downloadRunning) callbacks.onAdd() },
                 modifier = Modifier.testTag("blocklist-add").semantics {
                     if (model.downloadRunning) disabled()
                 },
-                containerColor = if (model.downloadRunning) MaterialTheme.colorScheme.surfaceVariant
-                    else MaterialTheme.colorScheme.primary,
+                containerColor = if (model.downloadRunning) MaterialTheme.colorScheme.surfaceContainerHighest
+                    else MaterialTheme.colorScheme.primaryContainer,
                 contentColor = if (model.downloadRunning) MaterialTheme.colorScheme.onSurfaceVariant
-                    else MaterialTheme.colorScheme.onPrimary
+                    else MaterialTheme.colorScheme.onPrimaryContainer
             ) {
                 Icon(
                     painter = painterResource(android.R.drawable.ic_input_add),
@@ -137,31 +149,53 @@ internal fun BlocklistsScreenContent(
             }
         }
     ) { contentPadding ->
-        Column(Modifier.fillMaxSize().padding(contentPadding)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(contentPadding)
+        ) {
             model.notice?.let { notice ->
-                Text(
+                ExpressiveWarningBanner(
                     text = notice,
-                    modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.secondaryContainer)
-                        .padding(16.dp).testTag("blocklist-mode-notice"),
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                    style = MaterialTheme.typography.bodyMedium
+                    icon = painterResource(R.drawable.ic_warning_amber),
+                    isError = false,
+                    modifier = Modifier
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .testTag("blocklist-mode-notice")
                 )
             }
             if (model.notice == null) {
                 Text(
                     stringResource(R.string.blocklist_browser_notice),
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                    style = MaterialTheme.typography.bodySmall
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             if (model.downloading) {
-                Text(
-                    stringResource(R.string.blocklist_downloading),
-                    modifier = Modifier.padding(16.dp).testTag("blocklist-downloading"),
-                    style = MaterialTheme.typography.bodyMedium
-                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                        .testTag("blocklist-downloading"),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    ExpressiveLoadingIndicator(
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Text(
+                        stringResource(R.string.blocklist_downloading),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
-            TextButton(onClick = callbacks::onDownload, enabled = !model.downloading && model.rows.any { it.enabled }) {
+            FilledTonalButton(
+                onClick = callbacks::onDownload,
+                enabled = !model.downloading && model.rows.any { it.enabled },
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            ) {
                 Text(stringResource(R.string.blocklist_update))
             }
             if (model.rows.isEmpty()) {
@@ -212,18 +246,15 @@ private fun BlocklistsList(
         modifier = Modifier
             .fillMaxSize()
             .padding(contentPadding),
-        contentPadding = PaddingValues(top = 8.dp, bottom = 80.dp)
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 80.dp),
+        verticalArrangement = Arrangement.spacedBy(ExpressiveGroupSpacing)
     ) {
         itemsIndexed(
             items = rows,
             key = { _, row -> row.uuid }
         ) { index, row ->
-            BlocklistListItem(row, callbacks, enabled)
-            if (index < rows.lastIndex) {
-                HorizontalDivider(
-                    modifier = Modifier.testTag("blocklist-divider"),
-                    color = MaterialTheme.colorScheme.outlineVariant
-                )
+            ExpressiveGroupedSurface(index = index, count = rows.size) {
+                BlocklistListItem(row, callbacks, enabled)
             }
         }
     }
@@ -236,6 +267,7 @@ private fun BlocklistListItem(
     enabled: Boolean
 ) {
     ListItem(
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
         headlineContent = {
             Text(
                 text = row.url,

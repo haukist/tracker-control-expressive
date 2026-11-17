@@ -19,8 +19,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -34,7 +34,7 @@ import androidx.compose.ui.unit.dp
 // DECISION: these are content-only primitives; Java/View hosts retain navigation
 // and window-inset ownership while the details screens migrate incrementally.
 
-/** A full-width, neutral section heading for detail-screen content. */
+/** A full-width, tonal section heading for detail-screen content. */
 @Composable
 fun DetailsSectionHeading(
     text: String,
@@ -42,7 +42,7 @@ fun DetailsSectionHeading(
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceVariant,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
         tonalElevation = 0.dp
     ) {
         Row(
@@ -56,7 +56,8 @@ fun DetailsSectionHeading(
             Text(
                 text = text,
                 modifier = Modifier.semantics { heading() },
-                style = MaterialTheme.typography.titleMedium
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary
             )
         }
     }
@@ -86,7 +87,7 @@ fun DetailsTextAction(
     }
 }
 
-/** A left-aligned light action for an operation in a detail section. */
+/** A left-aligned tonal action for an operation in a detail section. */
 @Composable
 fun DetailsPrimaryAction(
     text: String,
@@ -94,7 +95,7 @@ fun DetailsPrimaryAction(
     modifier: Modifier = Modifier,
     enabled: Boolean = true
 ) {
-    OutlinedButton(
+    FilledTonalButton(
         onClick = onClick,
         enabled = enabled,
         shape = MaterialTheme.shapes.medium,
