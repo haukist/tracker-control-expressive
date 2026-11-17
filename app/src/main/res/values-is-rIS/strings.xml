@@ -84,7 +84,6 @@
     <string name="timeline_tracker_allowed">Leyft</string>
     <string name="insights_overview_status">%1$s %2$s · %3$s %4$s</string>
     <string name="insights_overview_status_share">%1$s (%2$s)</string>
-    <string name="timeline_insights_status">%1$s %2$s · %3$s %4$s</string>
     <string name="feed_section_last_contact">síðasta tengiliður %s</string>
     <plurals name="feed_show_more_companies">
         <item quantity="one">Sýna %d fleiri fyrirtæki</item>

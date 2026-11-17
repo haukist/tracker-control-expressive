@@ -639,6 +639,9 @@ EU 一般データ保護規則（GDPR）第17条に定められた消去権を�
     <!-- Insights Screen -->
     <string name="insights_title">あなたのプライバシーインサイト</string>
     <string name="insights_subtitle_7days">過去7日間</string>
+    <string name="timeline_insights_period_24h">24時間</string>
+    <string name="timeline_insights_period_7d">7日間</string>
+    <string name="timeline_insights_period_30d">30日間</string>
     <string name="insights_tracking_attempts">接続されたトラッカーホスト</string>
     <string name="insights_blocked">ブロック済み</string>
     <string name="insights_allowed">許可済み</string>

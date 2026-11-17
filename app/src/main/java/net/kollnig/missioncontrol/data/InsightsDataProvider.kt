@@ -79,7 +79,7 @@ internal fun aggregateDomainObservations(
 
 /**
  * Provider class that computes InsightsData from the database.
- * Aggregates tracking statistics for the past 7 days.
+ * Aggregates tracking statistics for a trailing window of days (7 by default).
  */
 class InsightsDataProvider(context: Context) {
 
@@ -89,12 +89,13 @@ class InsightsDataProvider(context: Context) {
     private val trackerBlocklist: TrackerBlocklist = TrackerBlocklist.getInstance(context)
 
     /**
-     * Compute insights data for the past 7 days.
+     * Compute insights data for the past [days] days (1 means the last 24 hours).
      * This is a potentially expensive operation - call from background thread.
      *
      * @return InsightsData with all statistics populated
      */
-    fun computeInsights(): InsightsData {
+    @JvmOverloads
+    fun computeInsights(days: Int = 7): InsightsData {
         val data = InsightsData()
 
         // Ensure TrackerList is initialized (loads trackers from assets if needed)
@@ -126,7 +127,7 @@ class InsightsDataProvider(context: Context) {
         val domainToApps = mutableMapOf<String, MutableSet<Int>>()
         val uncertainDomains = mutableSetOf<String>()
 
-        databaseHelper.getInsightsData7Days().use { cursor ->
+        databaseHelper.getInsightsData(days).use { cursor ->
             if (cursor != null && cursor.moveToFirst()) {
                 val uidIndex = cursor.getColumnIndexOrThrow("uid")
                 val daddrIndex = cursor.getColumnIndexOrThrow("daddr")
@@ -184,7 +185,7 @@ class InsightsDataProvider(context: Context) {
                     uniqueCompanies.add(companyName)
                     appsWithTrackers.add(uid)
 
-                    // Count latest unique app-host contacts seen over the last 7 days.
+                    // Count latest unique app-host contacts seen over the selected window.
                     data.totalTrackingAttempts += 1
 
                     val isBlocked = isTrackerContactBlocked(
