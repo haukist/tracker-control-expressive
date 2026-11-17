@@ -60,7 +60,15 @@
     <string name="insights_overview_status">%1$s %2$s · %3$s %4$s</string>
     <!-- A blocked/allowed label followed by its share of all tracking attempts. -->
     <string name="insights_overview_status_share">%1$s (%2$s)</string>
-    <string name="timeline_insights_status">%1$s %2$s · %3$s %4$s</string>
+    <!-- Timeline summary card: label of the tile showing the share of tracker hosts that were blocked. Must be short. -->
+    <string name="timeline_insights_period_24h">24 hours</string>
+    <string name="timeline_insights_period_7d">7 days</string>
+    <string name="timeline_insights_period_30d">30 days</string>
+    <string name="timeline_insights_block_rate">Block rate</string>
+    <!-- Timeline summary card: fallback short label for the tracking-companies tile when the full label overflows one line. -->
+    <string name="timeline_insights_companies">Companies</string>
+    <!-- Timeline summary card, under the blocked count inside the ring: %1$s is the already-formatted number of tracker hosts contacted, e.g. "of 730". -->
+    <string name="timeline_insights_of_total">of %1$s</string>
     <string name="feed_section_last_contact">last contact %s</string>
     <plurals name="feed_show_more_companies">
         <item quantity="one">Show %d more company</item>

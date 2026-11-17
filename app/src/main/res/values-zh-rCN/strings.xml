@@ -58,7 +58,6 @@
     <string name="insights_overview_status">%1$s %2$s · %3$s %4$s</string>
     <!-- A blocked/allowed label followed by its share of all tracking attempts. -->
     <string name="insights_overview_status_share">%1$s (%2$s)</string>
-    <string name="timeline_insights_status">%1$s %2$s · %3$s %4$s</string>
     <string name="feed_section_last_contact">上次联系 %s</string>
     <plurals name="feed_show_more_companies">
         <item quantity="other">再显示 %d 家公司</item>

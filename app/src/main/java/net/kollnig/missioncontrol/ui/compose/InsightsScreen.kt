@@ -344,7 +344,9 @@ private fun InsightsOverviewCard(
                     modifier = Modifier
                         .weight(1f)
                         .padding(start = 10.dp),
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontFamily = GoogleSansFlexRoundedFontFamily
+                    ),
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -374,7 +376,9 @@ private fun InsightsOverviewCard(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = formatNumber(data.totalTrackingAttempts),
-                        style = MaterialTheme.typography.displayMedium,
+                        style = MaterialTheme.typography.displayMedium.copy(
+                            fontFamily = GoogleSansFlexRoundedFontFamily
+                        ),
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
@@ -387,7 +391,9 @@ private fun InsightsOverviewCard(
                 Column(horizontalAlignment = Alignment.End) {
                     Text(
                         text = formatPercentage(data.blockedPercentage),
-                        style = MaterialTheme.typography.headlineMedium,
+                        style = MaterialTheme.typography.headlineMedium.copy(
+                            fontFamily = GoogleSansFlexRoundedFontFamily
+                        ),
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary
                     )
@@ -495,7 +501,9 @@ private fun InsightReachMetric(
         Column(modifier = Modifier.padding(start = 12.dp)) {
             Text(
                 text = formatNumber(count),
-                style = MaterialTheme.typography.titleLarge,
+                style = MaterialTheme.typography.titleLarge.copy(
+                    fontFamily = GoogleSansFlexRoundedFontFamily
+                ),
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface
             )

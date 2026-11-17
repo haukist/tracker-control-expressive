@@ -6,28 +6,17 @@ import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
-import android.graphics.Bitmap;
-import android.graphics.Canvas;
-import android.graphics.Color;
-import android.graphics.Typeface;
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.util.Pair;
-import android.util.TypedValue;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.LinearLayout;
-import android.widget.FrameLayout;
-import android.widget.TextView;
-import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.compose.ui.platform.ComposeView;
-import androidx.core.content.FileProvider;
 import androidx.fragment.app.Fragment;
 import androidx.preference.PreferenceManager;
 
@@ -38,13 +27,12 @@ import net.kollnig.missioncontrol.data.Tracker;
 import net.kollnig.missioncontrol.data.TrackerContact;
 import net.kollnig.missioncontrol.data.TrackerList;
 import net.kollnig.missioncontrol.ui.compose.TimelineEmptyState;
+import net.kollnig.missioncontrol.ui.compose.TimelineInsightsPeriods;
 import net.kollnig.missioncontrol.ui.compose.TimelineScreen;
 import net.kollnig.missioncontrol.ui.compose.TimelineScreenCallbacks;
 import net.kollnig.missioncontrol.ui.compose.TimelineScreenController;
+import net.kollnig.missioncontrol.ui.compose.TimelineScreenModel;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.text.NumberFormat;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -68,14 +56,15 @@ public class TimelineFragment extends Fragment {
     private ComposeView composeView;
     @Nullable
     private TimelineScreenController screenController;
-    @Nullable
-    private InsightsData insightsData;
     private int viewGeneration;
     // Monotonically increasing per loader, so a request started earlier (but
     // finishing later, e.g. after a subsequent pull-to-refresh) never
     // overwrites a result from a request that was started after it.
     private int timelineRequestId;
     private int insightsRequestId;
+    private static final String PREF_INSIGHTS_DAYS = "timeline_insights_days";
+    // Trailing window of the summary at the top; 1 means the last 24 hours.
+    private int insightsDays = TimelineInsightsPeriods.DEFAULT_DAYS;
 
     private final Handler refreshHandler = new Handler(Looper.getMainLooper());
     private final Runnable refreshRunnable = this::refreshAll;
@@ -116,8 +105,12 @@ public class TimelineFragment extends Fragment {
 
         final int generation = ++viewGeneration;
         composeView = (ComposeView) view;
+        insightsDays = TimelineInsightsPeriods.sanitize(
+                PreferenceManager.getDefaultSharedPreferences(requireContext())
+                        .getInt(PREF_INSIGHTS_DAYS, TimelineInsightsPeriods.DEFAULT_DAYS));
         screenController = TimelineScreen.install(
                 composeView,
+                TimelineScreenModel.initial(insightsDays),
                 new TimelineScreenCallbacks() {
                     @Override
                     public void onEntryClick(int uid, String appName, String packageName) {
@@ -144,8 +137,15 @@ public class TimelineFragment extends Fragment {
                     }
 
                     @Override
-                    public void onShareInsights() {
-                        shareInsights(generation);
+                    public void onInsightsDaysSelected(int days) {
+                        days = TimelineInsightsPeriods.sanitize(days);
+                        if (!isCurrentView(generation) || days == insightsDays)
+                            return;
+                        insightsDays = days;
+                        PreferenceManager.getDefaultSharedPreferences(requireContext())
+                                .edit().putInt(PREF_INSIGHTS_DAYS, days).apply();
+                        screenController.setInsightsDays(days);
+                        loadInsights(generation);
                     }
 
                     @Override
@@ -200,7 +200,6 @@ public class TimelineFragment extends Fragment {
             lifecycleExecutor.shutdownNow();
             lifecycleExecutor = null;
         }
-        insightsData = null;
         composeView = null;
         viewGeneration++;
         super.onDestroyView();
@@ -280,142 +279,18 @@ public class TimelineFragment extends Fragment {
         if (executor == null || executor.isShutdown() || !isCurrentView(generation))
             return;
         final int requestId = ++insightsRequestId;
+        final int days = insightsDays;
         final Context context = requireContext().getApplicationContext();
         executor.execute(() -> {
-            InsightsData data = new InsightsDataProvider(context).computeInsights();
+            InsightsData data = new InsightsDataProvider(context).computeInsights(days);
             refreshHandler.post(() -> {
                 if (!isCurrentView(generation) || screenController == null)
                     return;
                 if (requestId != insightsRequestId)
                     return; // superseded by a request started after this one
-                insightsData = data;
                 screenController.updateInsights(data);
             });
         });
-    }
-
-    private void shareInsights(final int generation) {
-        final InsightsData data = insightsData;
-        final ExecutorService executor = lifecycleExecutor;
-        if (data == null || executor == null || executor.isShutdown() || !isCurrentView(generation))
-            return;
-        final Context context = requireContext().getApplicationContext();
-        executor.execute(() -> {
-            try {
-                File imageFile = generateShareImage(context, data);
-                if (imageFile == null)
-                    return;
-                refreshHandler.post(() -> {
-                    if (!isCurrentView(generation))
-                        return;
-                    try {
-                        android.net.Uri uri = FileProvider.getUriForFile(
-                                context,
-                                context.getPackageName() + ".provider",
-                                imageFile);
-                        String shareText = context.getString(
-                                R.string.insights_share_message,
-                                data.getBlockedTrackingAttempts(),
-                                data.getUniqueTrackerCompanies());
-                        Intent intent = new Intent(Intent.ACTION_SEND);
-                        intent.setType("image/png");
-                        intent.putExtra(Intent.EXTRA_STREAM, uri);
-                        intent.putExtra(Intent.EXTRA_TEXT, shareText);
-                        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                        context.startActivity(Intent.createChooser(intent,
-                                context.getString(R.string.insights_share))
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-                    } catch (Exception e) {
-                        android.util.Log.e(TAG, "Failed to share", e);
-                        Toast.makeText(context, R.string.export_failed, Toast.LENGTH_SHORT).show();
-                    }
-                });
-            } catch (Exception e) {
-                android.util.Log.e(TAG, "Failed to generate share image", e);
-            }
-        });
-    }
-
-    private File generateShareImage(Context context, InsightsData data) {
-        try {
-            LayoutInflater inflater = LayoutInflater.from(context);
-            View shareView = inflater.inflate(R.layout.layout_insights_share, new FrameLayout(context), false);
-
-            TextView tvTotalBlocked = shareView.findViewById(R.id.tvShareTotalBlocked);
-            LinearLayout llBlockedStat = shareView.findViewById(R.id.llShareBlockedStat);
-            TextView tvBlockedCount = shareView.findViewById(R.id.tvShareBlockedCount);
-            TextView tvCompanies = shareView.findViewById(R.id.tvShareCompanies);
-            LinearLayout llTopCompanies = shareView.findViewById(R.id.llShareTopCompanies);
-
-            NumberFormat nf = NumberFormat.getNumberInstance(java.util.Locale.getDefault());
-            tvTotalBlocked.setText(nf.format(data.getTotalTrackingAttempts()));
-            llBlockedStat.setVisibility(View.VISIBLE);
-            tvBlockedCount.setText(nf.format(data.getBlockedTrackingAttempts()));
-            tvCompanies.setText(String.valueOf(data.getUniqueTrackerCompanies()));
-
-            List<Pair<String, Integer>> top3 = data.getPervasiveTrackers().subList(
-                    0, Math.min(data.getPervasiveTrackers().size(), 3));
-            float density = context.getResources().getDisplayMetrics().density;
-            for (Pair<String, Integer> company : top3) {
-                LinearLayout row = new LinearLayout(context);
-                LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT);
-                rowParams.topMargin = (int) (4 * density);
-                row.setLayoutParams(rowParams);
-                row.setOrientation(LinearLayout.HORIZONTAL);
-
-                TextView nameView = new TextView(context);
-                nameView.setLayoutParams(new LinearLayout.LayoutParams(
-                        0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-                nameView.setText(company.first);
-                nameView.setTextColor(Color.WHITE);
-                nameView.setTextSize(12f);
-
-                TextView countView = new TextView(context);
-                countView.setLayoutParams(new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.WRAP_CONTENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT));
-                countView.setText(context.getString(R.string.insights_in_apps, company.second));
-                countView.setTextColor(Color.WHITE);
-                countView.setTextSize(12f);
-                countView.setTypeface(null, Typeface.BOLD);
-
-                row.addView(nameView);
-                row.addView(countView);
-                llTopCompanies.addView(row);
-            }
-
-            int widthPx = (int) TypedValue.applyDimension(
-                    TypedValue.COMPLEX_UNIT_DIP,
-                    400f,
-                    context.getResources().getDisplayMetrics());
-            int widthSpec = View.MeasureSpec.makeMeasureSpec(widthPx, View.MeasureSpec.EXACTLY);
-            int heightSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED);
-            shareView.measure(widthSpec, heightSpec);
-            shareView.layout(0, 0, shareView.getMeasuredWidth(), shareView.getMeasuredHeight());
-
-            Bitmap bitmap = Bitmap.createBitmap(
-                    shareView.getMeasuredWidth(),
-                    shareView.getMeasuredHeight(),
-                    Bitmap.Config.ARGB_8888);
-            Canvas canvas = new Canvas(bitmap);
-            shareView.draw(canvas);
-
-            File shareDir = new File(context.getCacheDir(), "share");
-            if (!shareDir.exists() && !shareDir.mkdirs() && !shareDir.isDirectory())
-                return null;
-            File imageFile = new File(shareDir, "trackercontrol_insights.png");
-            try (FileOutputStream out = new FileOutputStream(imageFile)) {
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out);
-            }
-            bitmap.recycle();
-            return imageFile;
-        } catch (Exception e) {
-            android.util.Log.e(TAG, "Failed to generate share image", e);
-            return null;
-        }
     }
 
     private List<TimelineEntry> buildTimeline(Context context) {

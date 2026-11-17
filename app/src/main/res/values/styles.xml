@@ -6,6 +6,8 @@
         <item name="colorPrimary">@color/colorPrimary</item>
         <item name="colorPrimaryDark">@color/colorPrimaryDark</item>
         <item name="colorAccent">@color/colorAccent</item>
+        <item name="android:fontFamily">@font/google_sans_flex_family</item>
+        <item name="fontFamily">@font/google_sans_flex_family</item>
     </style>
     <style name="AppTheme.NoActionBar">
         <item name="windowActionBar">false</item>
@@ -20,6 +22,8 @@
         <item name="windowActionBar">true</item>
         <item name="windowNoTitle">false</item>
         <item name="android:windowDisablePreview">true</item>
+        <item name="android:fontFamily">@font/google_sans_flex_family</item>
+        <item name="fontFamily">@font/google_sans_flex_family</item>
         <item name="actionBarStyle">@style/ActionBar.Red</item>
         <item name="actionBarTheme">@style/ActionBarTheme.Red</item>
         <item name="toolbarStyle">@style/Toolbar.Red</item>
@@ -41,6 +45,8 @@
     <style name="AppDialog" parent="Theme.Material3.DayNight.Dialog">
         <item name="windowActionBar">false</item>
         <item name="android:windowNoTitle">true</item>
+        <item name="android:fontFamily">@font/google_sans_flex_family</item>
+        <item name="fontFamily">@font/google_sans_flex_family</item>
     </style>
 
     <!-- Rocket Switch: Material 3 MaterialSwitch with rocket icon as thumbIcon -->

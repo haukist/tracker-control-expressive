@@ -15,28 +15,30 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedToggleButton
+import androidx.compose.material3.OutlinedToggleButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
@@ -65,12 +67,31 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.TextAutoSize
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.isSpecified
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.sp
 import net.kollnig.missioncontrol.R
 import net.kollnig.missioncontrol.data.InsightsData
 import net.kollnig.missioncontrol.data.TimelineEntry
@@ -97,20 +118,22 @@ sealed interface TimelineInsightsState {
 data class TimelineInsightsData(
     val totalTrackingAttempts: Int,
     val blockedTrackingAttempts: Int,
-    val allowedTrackingAttempts: Int,
-    val uniqueTrackerCompanies: Int,
-    val blockedPercentage: Int,
-    val allowedPercentage: Int
+    val uniqueTrackerCompanies: Int
 ) {
+    /** Share of the selected period's tracker hosts that were blocked, 0..1; 0 when there were none. */
+    val blockedFraction: Float
+        get() = if (totalTrackingAttempts > 0) {
+            (blockedTrackingAttempts.toFloat() / totalTrackingAttempts).coerceIn(0f, 1f)
+        } else {
+            0f
+        }
+
     companion object {
         @JvmStatic
         fun from(data: InsightsData): TimelineInsightsData = TimelineInsightsData(
             totalTrackingAttempts = data.totalTrackingAttempts,
             blockedTrackingAttempts = data.blockedTrackingAttempts,
-            allowedTrackingAttempts = data.allowedTrackingAttempts,
-            uniqueTrackerCompanies = data.uniqueTrackerCompanies,
-            blockedPercentage = data.getBlockedPercentage(),
-            allowedPercentage = 100 - data.getBlockedPercentage()
+            uniqueTrackerCompanies = data.uniqueTrackerCompanies
         )
     }
 }
@@ -157,22 +180,39 @@ sealed interface TimelineRow {
     }
 }
 
+/** The trailing windows, in days, the Insights summary can show; 1 is the last 24 hours. */
+object TimelineInsightsPeriods {
+    const val DEFAULT_DAYS = 7
+
+    @JvmField
+    val OPTIONS: List<Int> = listOf(1, 7, 30)
+
+    /** Maps a stored value back onto a supported window. */
+    @JvmStatic
+    fun sanitize(days: Int): Int = if (days in OPTIONS) days else DEFAULT_DAYS
+}
+
 @Immutable
 data class TimelineScreenModel(
     val insights: TimelineInsightsState,
     val emptyState: TimelineEmptyState?,
     val showHint: Boolean,
     val rows: List<TimelineRow>,
-    val isRefreshing: Boolean = false
+    val isRefreshing: Boolean = false,
+    val insightsDays: Int = TimelineInsightsPeriods.DEFAULT_DAYS
 ) {
     companion object {
         @JvmStatic
-        fun initial(): TimelineScreenModel = TimelineScreenModel(
+        @JvmOverloads
+        fun initial(
+            insightsDays: Int = TimelineInsightsPeriods.DEFAULT_DAYS
+        ): TimelineScreenModel = TimelineScreenModel(
             insights = TimelineInsightsState.Loading,
             emptyState = null,
             showHint = false,
             rows = emptyList(),
-            isRefreshing = false
+            isRefreshing = false,
+            insightsDays = insightsDays
         )
     }
 }
@@ -183,7 +223,9 @@ interface TimelineScreenCallbacks {
     fun onOpenApp()
     fun onOpenSettings()
     fun onOpenInsights()
-    fun onShareInsights()
+
+    /** The user picked another window ([days]; 1 means 24 hours) for the summary. */
+    fun onInsightsDaysSelected(days: Int)
     fun onDismissHint()
 
     /** Pull-to-refresh gesture; rebuilds the timeline and the insights card. */
@@ -225,6 +267,11 @@ class TimelineScreenController internal constructor(
         state.value = state.value.copy(
             insights = TimelineInsightsState.Populated(TimelineInsightsData.from(data))
         )
+    }
+
+    fun setInsightsDays(days: Int) {
+        if (!valid) return
+        state.value = state.value.copy(insightsDays = days)
     }
 
     fun dismissHint() {
@@ -296,7 +343,7 @@ private fun TimelineList(
         contentPadding = PaddingValues(bottom = 16.dp)
     ) {
         item(key = "insights-summary") {
-            TimelineInsightsCard(model.insights, callbacks)
+            TimelineInsightsSection(model.insights, model.insightsDays, callbacks)
         }
 
         model.emptyState?.let { emptyState ->
@@ -335,29 +382,90 @@ private fun TimelineList(
     }
 }
 
-private val InsightsCardPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 16.dp)
+private val InsightsSectionPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 16.dp)
+
+/**
+ * The Insights summary: a period selector above the ring and tiles. It sits
+ * directly on the screen background rather than inside a card.
+ */
+@Composable
+private fun TimelineInsightsSection(
+    state: TimelineInsightsState,
+    days: Int,
+    callbacks: TimelineScreenCallbacks
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(InsightsSectionPadding),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        TimelineInsightsPeriodSelector(
+            selectedDays = days,
+            onSelect = callbacks::onInsightsDaysSelected
+        )
+        TimelineInsightsSummary(state, callbacks)
+    }
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun TimelineInsightsPeriodSelector(
+    selectedDays: Int,
+    onSelect: (Int) -> Unit
+) {
+    val options = TimelineInsightsPeriods.OPTIONS
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)
+    ) {
+        options.forEachIndexed { index, days ->
+            val shapes = when (index) {
+                0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                options.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+                else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
+            }
+            OutlinedToggleButton(
+                checked = selectedDays == days,
+                onCheckedChange = { checked -> if (checked) onSelect(days) },
+                shapes = shapes,
+                colors = OutlinedToggleButtonDefaults.colors(
+                    checkedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
+                    checkedContentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                ),
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("timeline-insights-period-$days")
+            ) {
+                Text(
+                    text = stringResource(
+                        when (days) {
+                            1 -> R.string.timeline_insights_period_24h
+                            30 -> R.string.timeline_insights_period_30d
+                            else -> R.string.timeline_insights_period_7d
+                        }
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
 
 @Composable
-private fun TimelineInsightsCard(
+private fun TimelineInsightsSummary(
     state: TimelineInsightsState,
     callbacks: TimelineScreenCallbacks
 ) {
     val insightsTitle = stringResource(R.string.insights_title)
     when (state) {
-        TimelineInsightsState.Loading -> Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(InsightsCardPadding)
-                .semantics { contentDescription = insightsTitle },
-            shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceContainerLow
-            )
-        ) {
+        TimelineInsightsState.Loading -> {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(104.dp)
+                    .height(InsightsRingSize)
+                    .semantics { contentDescription = insightsTitle }
                     .testTag("timeline-insights-loading"),
                 contentAlignment = Alignment.Center
             ) {
@@ -369,221 +477,317 @@ private fun TimelineInsightsCard(
             val data = state.data
             val locale = LocalLocale.current.platformLocale
             val numberFormat = NumberFormat.getNumberInstance(locale)
+            // One decimal, so a low block rate still shows movement week to week.
             val percentFormat = NumberFormat.getPercentInstance(locale).apply {
-                maximumFractionDigits = 0
+                minimumFractionDigits = 1
+                maximumFractionDigits = 1
             }
-            val totalText = numberFormat.format(data.totalTrackingAttempts)
             val blockedText = numberFormat.format(data.blockedTrackingAttempts)
-            val allowedText = numberFormat.format(data.allowedTrackingAttempts)
-            val blockedPercentageText = percentFormat.format(data.blockedPercentage / 100f)
-            val seeMoreLabel = stringResource(R.string.insights_see_more)
-            val shareLabel = stringResource(R.string.insights_share)
-            val totalDescription = stringResource(
-                R.string.accessibility_stat_description,
-                totalText,
-                stringResource(R.string.insights_tracking_attempts)
+            val ofTotalText = stringResource(
+                R.string.timeline_insights_of_total,
+                numberFormat.format(data.totalTrackingAttempts)
             )
-            val companiesText = numberFormat.format(data.uniqueTrackerCompanies)
-            val companiesDescription = stringResource(
-                R.string.accessibility_stat_description,
-                companiesText,
-                stringResource(R.string.insights_tracker_companies)
-            )
-            val percentageDescription = stringResource(
-                R.string.accessibility_stat_description,
-                blockedPercentageText,
-                stringResource(R.string.insights_blocked)
-            )
-            val statusText = stringResource(
-                R.string.timeline_insights_status,
-                blockedText,
-                stringResource(R.string.insights_blocked),
-                allowedText,
-                stringResource(R.string.insights_allowed)
-            )
+            val blockedLabel = stringResource(R.string.insights_blocked)
+            val colors = MaterialTheme.colorScheme
 
-            Card(
+            // Tapping the summary opens the full Insights screen.
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(InsightsCardPadding)
+                    .clip(RoundedCornerShape(24.dp))
                     .clickable(
+                        onClickLabel = insightsTitle,
                         role = Role.Button,
                         onClick = callbacks::onOpenInsights
                     )
                     .testTag("timeline-insights-card"),
-                shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                    contentColor = MaterialTheme.colorScheme.onSurface
-                )
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                // Top padding compensates for the 48.dp IconButton's 12.dp internal inset so
-                // the visual top, bottom, and side margins all stay 16.dp.
-                Column(modifier = Modifier.heroCardPadding(16.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_shield_check),
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Text(
-                            text = stringResource(R.string.insights_subtitle_7days),
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(start = 8.dp),
-                            color = MaterialTheme.colorScheme.onSurface,
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        // No size() here: IconButton's own 48dp minimum touch
-                        // target must survive; the glyph is sized on the Icon,
-                        // and offset aligns its right edge with the 16.dp content margin.
-                        IconButton(
-                            onClick = callbacks::onShareInsights,
-                            modifier = Modifier
-                                .offset(x = HeroShareButtonInset)
-                                .semantics { contentDescription = shareLabel }
-                        ) {
-                            Icon(
-                                painter = painterResource(R.drawable.ic_share),
-                                contentDescription = null,
-                                modifier = Modifier.size(24.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 2.dp),
-                        verticalAlignment = Alignment.Bottom
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .semantics(mergeDescendants = true) {
-                                    contentDescription = totalDescription
-                                }
-                        ) {
-                            Text(
-                                text = totalText,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                style = MaterialTheme.typography.headlineLarge,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = stringResource(R.string.insights_tracking_attempts),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-                        // Middle stat of the pre-Compose hero row: how many
-                        // distinct tracking companies the week's contacts came
-                        // from, between the attempt count and the blocked share.
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .semantics(mergeDescendants = true) {
-                                    contentDescription = companiesDescription
-                                }
-                        ) {
-                            Text(
-                                text = companiesText,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                style = MaterialTheme.typography.headlineLarge,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = stringResource(R.string.insights_tracker_companies),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-                        Column(
-                            modifier = Modifier.semantics(mergeDescendants = true) {
-                                contentDescription = percentageDescription
-                            },
-                            horizontalAlignment = Alignment.End
-                        ) {
-                            Text(
-                                text = blockedPercentageText,
-                                color = MaterialTheme.colorScheme.primary,
-                                style = MaterialTheme.typography.headlineSmall,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = stringResource(R.string.insights_blocked),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                style = MaterialTheme.typography.labelMedium
-                            )
-                        }
-                    }
-
-                    TimelineProgressBar(
-                        progress = data.blockedPercentage / 100f,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 12.dp)
-                            .height(6.dp)
-                            .testTag("timeline-insights-progress"),
-                        indicatorColor = MaterialTheme.colorScheme.primary,
-                        trackColor = MaterialTheme.colorScheme.surface
+                TimelineInsightsRing(
+                    progress = data.blockedFraction,
+                    label = blockedLabel,
+                    valueText = blockedText,
+                    ofTotalText = ofTotalText,
+                    description = stringResource(
+                        R.string.accessibility_stat_description,
+                        "$blockedText $ofTotalText",
+                        blockedLabel
                     )
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = statusText,
-                            modifier = Modifier
-                                .weight(1f)
-                                .semantics { contentDescription = statusText },
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.labelSmall
-                        )
-                        Text(
-                            text = seeMoreLabel,
-                            modifier = Modifier.padding(start = 12.dp),
-                            color = MaterialTheme.colorScheme.primary,
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
+                )
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(InsightsTileSpacing)
+                ) {
+                    // The tile doubles as a meter: its leading part is
+                    // filled to the same share the ring shows.
+                    TimelineInsightsTile(
+                        iconRes = R.drawable.ic_shield_check,
+                        label = stringResource(R.string.timeline_insights_block_rate),
+                        value = percentFormat.format(data.blockedFraction.toDouble()),
+                        containerColor = colors.primaryContainer,
+                        contentColor = colors.onPrimaryContainer,
+                        fillFraction = data.blockedFraction,
+                        fillColor = lerp(colors.primaryContainer, colors.primary, 0.25f)
+                    )
+                    // A dynamic dark scheme can hand out a light
+                    // tertiaryContainer; on a dark surface that tile
+                    // glares, so darken it and flip its content light.
+                    val isDarkTheme = colors.surface.luminance() < 0.5f
+                    val tertiaryIsLight = colors.tertiaryContainer.luminance() > 0.2f
+                    val darkenTertiary = isDarkTheme && tertiaryIsLight
+                    TimelineInsightsTile(
+                        iconRes = R.drawable.ic_domain,
+                        label = stringResource(R.string.insights_tracker_companies),
+                        shortLabel = stringResource(R.string.timeline_insights_companies),
+                        value = numberFormat.format(data.uniqueTrackerCompanies),
+                        containerColor = if (darkenTertiary) {
+                            lerp(colors.tertiaryContainer, Color.Black, 0.5f)
+                        } else {
+                            colors.tertiaryContainer
+                        },
+                        contentColor = if (darkenTertiary) {
+                            lerp(colors.tertiaryContainer, Color.White, 0.6f)
+                        } else {
+                            colors.onTertiaryContainer
+                        }
+                    )
                 }
             }
         }
     }
 }
 
+// Without the card's own 16.dp inset the ring and tiles get that width back.
+// The ring matches the height of the two stacked tiles.
+private val InsightsTileHeight = 72.dp
+private val InsightsTileSpacing = 8.dp
+private val InsightsRingSize = InsightsTileHeight * 2 + InsightsTileSpacing
+private val InsightsRingStroke = 16.dp
+
+/** Blocked-share ring with the blocked count, and the total it is out of, in its centre. */
 @Composable
-private fun TimelineProgressBar(
+private fun TimelineInsightsRing(
     progress: Float,
-    indicatorColor: Color,
-    trackColor: Color,
+    label: String,
+    valueText: String,
+    ofTotalText: String,
+    description: String,
     modifier: Modifier = Modifier
 ) {
     val clampedProgress = progress.coerceIn(0f, 1f)
+    val trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
+    val indicatorColor = MaterialTheme.colorScheme.primary
     Box(
         modifier = modifier
-            .semantics {
-                progressBarRangeInfo = ProgressBarRangeInfo(clampedProgress, 0f..1f)
+            .size(InsightsRingSize)
+            .semantics(mergeDescendants = true) { contentDescription = description },
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .testTag("timeline-insights-progress")
+                .semantics {
+                    progressBarRangeInfo = ProgressBarRangeInfo(clampedProgress, 0f..1f)
+                }
+        ) {
+            val stroke = InsightsRingStroke.toPx()
+            val arcTopLeft = Offset(stroke / 2f, stroke / 2f)
+            val arcSize = Size(size.width - stroke, size.height - stroke)
+            drawArc(
+                color = trackColor,
+                startAngle = 0f,
+                sweepAngle = 360f,
+                useCenter = false,
+                topLeft = arcTopLeft,
+                size = arcSize,
+                style = Stroke(width = stroke)
+            )
+            // A zero sweep with a round cap would still paint a dot.
+            if (clampedProgress > 0f) {
+                drawArc(
+                    color = indicatorColor,
+                    startAngle = -90f,
+                    sweepAngle = 360f * clampedProgress,
+                    useCenter = false,
+                    topLeft = arcTopLeft,
+                    size = arcSize,
+                    style = Stroke(width = stroke, cap = StrokeCap.Round)
+                )
             }
-            .clip(RoundedCornerShape(3.dp))
-            .background(trackColor)
+        }
+        Column(
+            // Narrower than the ring's inner diameter, so text stays off the stroke.
+            modifier = Modifier.width(InsightsRingSize - InsightsRingStroke * 2 - 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = label,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontFamily = GoogleSansFlexRoundedFontFamily,
+                    fontWeight = FontWeight.Bold
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            // Shrinks rather than clips once the count reaches five or six digits.
+            Text(
+                text = valueText,
+                color = MaterialTheme.colorScheme.onSurface,
+                style = MaterialTheme.typography.headlineMedium.copy(
+                    fontFamily = GoogleSansFlexRoundedFontFamily
+                ),
+                maxLines = 1,
+                autoSize = TextAutoSize.StepBased(
+                    minFontSize = 16.sp,
+                    maxFontSize = 36.sp,
+                    stepSize = 1.sp
+                )
+            )
+            Text(
+                text = ofTotalText,
+                color = MaterialTheme.colorScheme.primary,
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontFamily = GoogleSansFlexRoundedFontFamily,
+                    fontWeight = FontWeight.Bold
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+/**
+ * Pill tile beside the ring: an icon in its own pill, a label and a value.
+ * A non-zero [fillFraction] paints the leading part of the tile in [fillColor].
+ */
+@Composable
+private fun TimelineInsightsTile(
+    iconRes: Int,
+    label: String,
+    value: String,
+    containerColor: Color,
+    contentColor: Color,
+    modifier: Modifier = Modifier,
+    shortLabel: String? = null,
+    fillFraction: Float = 0f,
+    fillColor: Color = Color.Unspecified
+) {
+    // The icon pill moves away from the icon's own colour: lighter than a light
+    // tile, darker than a dark one. Decided per tile, not per theme, because a
+    // dynamic dark scheme can hand out a light container (tertiaryContainer on
+    // some devices) whose dark content would vanish on a darkened pill.
+    val isLightContainer = containerColor.luminance() > contentColor.luminance()
+    // On a light tile the pill is only a step lighter than the unfilled
+    // container, so it reads as part of the tile rather than a white hole.
+    val iconContainerColor = if (isLightContainer) {
+        lerp(containerColor, Color.White, 0.45f)
+    } else {
+        lerp(containerColor, Color.Black, 0.4f)
+    }
+    val clampedFill = fillFraction.coerceIn(0f, 1f)
+    val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    val description = stringResource(R.string.accessibility_stat_description, value, label)
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = InsightsTileHeight)
+            .clip(RoundedCornerShape(24.dp))
+            .background(containerColor)
+            .drawBehind {
+                if (clampedFill > 0f && fillColor.isSpecified) {
+                    val fillWidth = size.width * clampedFill
+                    drawRect(
+                        color = fillColor,
+                        topLeft = Offset(if (isRtl) size.width - fillWidth else 0f, 0f),
+                        size = Size(fillWidth, size.height)
+                    )
+                }
+            }
+            // 6.dp on the icon's three outer sides keeps its pill concentric
+            // with the tile's corners.
+            .padding(start = 6.dp, top = 6.dp, end = 12.dp, bottom = 6.dp)
+            .semantics(mergeDescendants = true) { contentDescription = description },
+        verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             modifier = Modifier
-                .fillMaxWidth(clampedProgress)
-                .fillMaxHeight()
-                .background(indicatorColor)
-        )
+                .size(width = 40.dp, height = InsightsTileHeight - 12.dp)
+                .background(iconContainerColor, CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                painter = painterResource(iconRes),
+                contentDescription = null,
+                tint = contentColor,
+                modifier = Modifier.size(22.dp)
+            )
+        }
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            val tileLineHeightStyle = LineHeightStyle(
+                alignment = LineHeightStyle.Alignment.Center,
+                trim = LineHeightStyle.Trim.Both
+            )
+            val labelStyle = MaterialTheme.typography.labelLarge.copy(
+                fontFamily = GoogleSansFlexRoundedFontFamily,
+                fontSize = 14.sp,
+                lineHeight = 16.sp,
+                lineHeightStyle = tileLineHeightStyle,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.sp
+            )
+            if (shortLabel != null) {
+                val textMeasurer = rememberTextMeasurer()
+                BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                    val fitsFullLabel = remember(label, labelStyle, constraints.maxWidth, textMeasurer) {
+                        !constraints.hasBoundedWidth || !textMeasurer.measure(
+                            text = label,
+                            style = labelStyle,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Clip,
+                            constraints = Constraints(maxWidth = constraints.maxWidth)
+                        ).hasVisualOverflow
+                    }
+                    Text(
+                        text = if (fitsFullLabel) label else shortLabel,
+                        color = contentColor,
+                        style = labelStyle,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            } else {
+                Text(
+                    text = label,
+                    color = contentColor,
+                    style = labelStyle,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Text(
+                text = value,
+                color = contentColor,
+                style = MaterialTheme.typography.titleLarge.copy(
+                    fontFamily = GoogleSansFlexRoundedFontFamily,
+                    fontSize = 26.sp,
+                    lineHeight = 28.sp,
+                    lineHeightStyle = tileLineHeightStyle,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.sp
+                ),
+                maxLines = 1
+            )
+        }
     }
 }
 
@@ -936,13 +1140,18 @@ private fun startOfDay(daysAgo: Int): Long {
 }
 
 @Preview(showBackground = true)
+@Preview(name = "Compact 360dp", showBackground = true, widthDp = 360)
 @Composable
 private fun TimelineScreenPreview() {
     TrackerControlTheme {
         TimelineScreenContent(
             model = TimelineScreenModel(
                 insights = TimelineInsightsState.Populated(
-                    TimelineInsightsData(12, 9, 3, 4, 75, 25)
+                    TimelineInsightsData(
+                        totalTrackingAttempts = 730,
+                        blockedTrackingAttempts = 168,
+                        uniqueTrackerCompanies = 59
+                    )
                 ),
                 emptyState = null,
                 showHint = true,
@@ -981,7 +1190,7 @@ private object PreviewTimelineCallbacks : TimelineScreenCallbacks {
     override fun onOpenApp() = Unit
     override fun onOpenSettings() = Unit
     override fun onOpenInsights() = Unit
-    override fun onShareInsights() = Unit
+    override fun onInsightsDaysSelected(days: Int) = Unit
     override fun onDismissHint() = Unit
     override fun onRefresh() = Unit
 }

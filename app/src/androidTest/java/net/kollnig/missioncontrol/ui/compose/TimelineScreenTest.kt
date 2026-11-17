@@ -13,6 +13,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertRangeInfoEquals
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -55,18 +56,51 @@ class TimelineScreenTest {
         composeRule.onNodeWithTag("timeline-insights-loading").assertIsDisplayed()
 
         composeRule.runOnIdle { model.value = populatedModel() }
-        composeRule.onNodeWithText("12").assertExists()
-        composeRule.onNodeWithText(NumberFormat.getPercentInstance().format(0.75)).assertExists()
-        // The card is clickable, so it merges its descendants: the progress
-        // bar is only addressable in the unmerged tree.
+        // The card is clickable, so it merges its descendants: its texts and
+        // the ring are only addressable in the unmerged tree.
+        val blockRate = NumberFormat.getPercentInstance().apply {
+            minimumFractionDigits = 1
+            maximumFractionDigits = 1
+        }.format(0.75)
+        listOf(
+            "9",
+            context.getString(R.string.timeline_insights_of_total, "12"),
+            blockRate,
+            context.getString(R.string.timeline_insights_block_rate),
+            "4"
+        ).forEach { text ->
+            composeRule.onNodeWithText(text, useUnmergedTree = true).assertExists()
+        }
+        composeRule.onNode(
+            hasText(context.getString(R.string.insights_tracker_companies)) or
+                hasText(context.getString(R.string.timeline_insights_companies)),
+            useUnmergedTree = true
+        ).assertExists()
         composeRule.onNodeWithTag("timeline-insights-progress", useUnmergedTree = true)
             .assertRangeInfoEquals(ProgressBarRangeInfo(0.75f, 0f..1f))
-        composeRule.onNodeWithTag("timeline-insights-card").performClick()
+        // Sharing lives on the Insights screen only; the card just opens it.
         composeRule.onNodeWithContentDescription(context.getString(R.string.insights_share))
-            .performClick()
+            .assertDoesNotExist()
+        composeRule.onNodeWithTag("timeline-insights-card").performClick()
         composeRule.runOnIdle {
             assertEquals(1, callbacks.openInsights)
-            assertEquals(1, callbacks.shareInsights)
+        }
+    }
+
+    @Test
+    fun periodSelectorReportsOnlyNewSelections() {
+        val callbacks = RecordingCallbacks()
+        composeRule.setContent {
+            TrackerControlTheme {
+                TimelineScreenContent(populatedModel().copy(insightsDays = 7), callbacks)
+            }
+        }
+        // 7 days is already selected, so tapping it again must not report.
+        composeRule.onNodeWithTag("timeline-insights-period-7").performClick()
+        composeRule.onNodeWithTag("timeline-insights-period-30").performClick()
+        composeRule.onNodeWithTag("timeline-insights-period-1").performClick()
+        composeRule.runOnIdle {
+            assertEquals(listOf(30, 1), callbacks.selectedDays)
         }
     }
 
@@ -192,7 +226,11 @@ class TimelineScreenTest {
         )
         return TimelineScreenModel(
             insights = TimelineInsightsState.Populated(
-                TimelineInsightsData(12, 9, 3, 4, 75, 25)
+                TimelineInsightsData(
+                    totalTrackingAttempts = 12,
+                    blockedTrackingAttempts = 9,
+                    uniqueTrackerCompanies = 4
+                )
             ),
             emptyState = null,
             showHint = showHint,
@@ -210,7 +248,7 @@ class TimelineScreenTest {
     private class RecordingCallbacks : TimelineScreenCallbacks {
         var entryClicks = 0
         var openInsights = 0
-        var shareInsights = 0
+        val selectedDays = mutableListOf<Int>()
         var openApp = 0
         var openSettings = 0
         var dismissHint = 0
@@ -232,8 +270,8 @@ class TimelineScreenTest {
             openInsights++
         }
 
-        override fun onShareInsights() {
-            shareInsights++
+        override fun onInsightsDaysSelected(days: Int) {
+            selectedDays += days
         }
 
         override fun onDismissHint() {

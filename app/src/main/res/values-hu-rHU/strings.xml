@@ -56,7 +56,6 @@
     <string name="timeline_tracker_blocked">Blokkolva</string>
     <string name="timeline_tracker_allowed">Engedélyezve</string>
     <!-- A blocked/allowed label followed by its share of all tracking attempts. -->
-    <string name="timeline_insights_status"></string>
     <string name="feed_section_last_contact">utolsó kapcsolatfelvétel: %s</string>
     <plurals name="feed_show_more_companies">
         <item quantity="one">Még %d vállalat megjelenítése</item>

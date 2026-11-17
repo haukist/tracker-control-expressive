@@ -1094,21 +1094,24 @@ public class DatabaseHelper extends SQLiteOpenHelper {
      * Get recent tracker access rows for the Insights screen.
      * The provider deduplicates these rows into the latest app-host contact.
      *
+     * @param days how many days back to look; 1 is the last 24 hours
      * @return Cursor with columns: uid, daddr, allowed, time, uncertain
      */
-    public Cursor getInsightsData7Days() {
+    public Cursor getInsightsData(int days) {
+        if (days <= 0)
+            throw new IllegalArgumentException("days must be positive: " + days);
         flushAccessBatch();
         lock.readLock().lock();
         try {
             SQLiteDatabase db = this.getReadableDatabase();
-            long sevenDaysAgo = System.currentTimeMillis() - (7L * 24 * 60 * 60 * 1000);
+            long since = System.currentTimeMillis() - (days * 24L * 60 * 60 * 1000);
 
             String query = "SELECT uid, daddr, allowed, time, uncertain " +
                     "FROM access " +
                     "WHERE time >= ? " +
                     "ORDER BY time DESC, ID DESC";
 
-            return db.rawQuery(query, new String[] { Long.toString(sevenDaysAgo) });
+            return db.rawQuery(query, new String[] { Long.toString(since) });
         } finally {
             lock.readLock().unlock();
         }

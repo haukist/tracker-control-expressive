@@ -40,6 +40,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.ExperimentalTextApi
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -133,16 +137,76 @@ private fun rememberDynamicColorPreference(): Boolean {
     return enabled
 }
 
+@OptIn(ExperimentalTextApi::class)
+private fun googleSansFlexFontFamily(roundness: Float? = null): FontFamily {
+    val weights = listOf(
+        FontWeight.Light to 300,
+        FontWeight.Normal to 400,
+        FontWeight.Medium to 500,
+        FontWeight.SemiBold to 600,
+        FontWeight.Bold to 700
+    )
+    return FontFamily(
+        weights.map { (fontWeight, weightValue) ->
+            val settings = if (roundness != null) {
+                FontVariation.Settings(
+                    FontVariation.weight(weightValue),
+                    FontVariation.Setting("ROND", roundness)
+                )
+            } else {
+                FontVariation.Settings(FontVariation.weight(weightValue))
+            }
+            Font(
+                resId = R.font.google_sans_flex,
+                weight = fontWeight,
+                variationSettings = settings
+            )
+        }
+    )
+}
+
+internal val GoogleSansFlexFontFamily = googleSansFlexFontFamily()
+internal val GoogleSansFlexRoundedFontFamily = googleSansFlexFontFamily(roundness = 100f)
+
 private val BaseTypography = Typography()
 
 internal val TrackerControlExpressiveTypography = BaseTypography.copy(
-    displayMedium = BaseTypography.displayMedium.copy(fontWeight = FontWeight.Bold),
-    displaySmall = BaseTypography.displaySmall.copy(fontWeight = FontWeight.Bold),
-    headlineLarge = BaseTypography.headlineLarge.copy(fontWeight = FontWeight.Bold),
-    headlineMedium = BaseTypography.headlineMedium.copy(fontWeight = FontWeight.SemiBold),
-    headlineSmall = BaseTypography.headlineSmall.copy(fontWeight = FontWeight.SemiBold),
-    titleLarge = BaseTypography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
-    titleMedium = BaseTypography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
+    displayLarge = BaseTypography.displayLarge.copy(fontFamily = GoogleSansFlexFontFamily),
+    displayMedium = BaseTypography.displayMedium.copy(
+        fontFamily = GoogleSansFlexFontFamily,
+        fontWeight = FontWeight.Bold
+    ),
+    displaySmall = BaseTypography.displaySmall.copy(
+        fontFamily = GoogleSansFlexFontFamily,
+        fontWeight = FontWeight.Bold
+    ),
+    headlineLarge = BaseTypography.headlineLarge.copy(
+        fontFamily = GoogleSansFlexFontFamily,
+        fontWeight = FontWeight.Bold
+    ),
+    headlineMedium = BaseTypography.headlineMedium.copy(
+        fontFamily = GoogleSansFlexFontFamily,
+        fontWeight = FontWeight.SemiBold
+    ),
+    headlineSmall = BaseTypography.headlineSmall.copy(
+        fontFamily = GoogleSansFlexFontFamily,
+        fontWeight = FontWeight.SemiBold
+    ),
+    titleLarge = BaseTypography.titleLarge.copy(
+        fontFamily = GoogleSansFlexFontFamily,
+        fontWeight = FontWeight.SemiBold
+    ),
+    titleMedium = BaseTypography.titleMedium.copy(
+        fontFamily = GoogleSansFlexFontFamily,
+        fontWeight = FontWeight.SemiBold
+    ),
+    titleSmall = BaseTypography.titleSmall.copy(fontFamily = GoogleSansFlexFontFamily),
+    bodyLarge = BaseTypography.bodyLarge.copy(fontFamily = GoogleSansFlexFontFamily),
+    bodyMedium = BaseTypography.bodyMedium.copy(fontFamily = GoogleSansFlexFontFamily),
+    bodySmall = BaseTypography.bodySmall.copy(fontFamily = GoogleSansFlexFontFamily),
+    labelLarge = BaseTypography.labelLarge.copy(fontFamily = GoogleSansFlexFontFamily),
+    labelMedium = BaseTypography.labelMedium.copy(fontFamily = GoogleSansFlexFontFamily),
+    labelSmall = BaseTypography.labelSmall.copy(fontFamily = GoogleSansFlexFontFamily)
 )
 
 internal val TrackerControlExpressiveShapes = Shapes(

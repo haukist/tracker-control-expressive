@@ -45,6 +45,30 @@ class TrackerControlThemeTest {
         assertTrue(lumBg < lumLow && lumLow < lumContainer && lumContainer < lumHigh && lumHigh < lumHighest)
     }
 
+    @Test
+    fun expressiveTypographyUsesGoogleSansFlex() {
+        val styles = listOf(
+            TrackerControlExpressiveTypography.displayLarge,
+            TrackerControlExpressiveTypography.displayMedium,
+            TrackerControlExpressiveTypography.displaySmall,
+            TrackerControlExpressiveTypography.headlineLarge,
+            TrackerControlExpressiveTypography.headlineMedium,
+            TrackerControlExpressiveTypography.headlineSmall,
+            TrackerControlExpressiveTypography.titleLarge,
+            TrackerControlExpressiveTypography.titleMedium,
+            TrackerControlExpressiveTypography.titleSmall,
+            TrackerControlExpressiveTypography.bodyLarge,
+            TrackerControlExpressiveTypography.bodyMedium,
+            TrackerControlExpressiveTypography.bodySmall,
+            TrackerControlExpressiveTypography.labelLarge,
+            TrackerControlExpressiveTypography.labelMedium,
+            TrackerControlExpressiveTypography.labelSmall
+        )
+        styles.forEach { style ->
+            assertEquals(GoogleSansFlexFontFamily, style.fontFamily)
+        }
+    }
+
     private fun themedContext(): Context {
         val application = RuntimeEnvironment.getApplication()
         return ContextThemeWrapper(application, R.style.AppThemeRed)
